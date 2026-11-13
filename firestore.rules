@@ -1,0 +1,88 @@
+rules_version = '2';
+
+// =========================================================
+// UBMeal — regras do Cloud Firestore
+// Cole este arquivo em: Console do Firebase › Firestore Database
+// › Regras › Publicar.
+//
+// Quem é da cantina: crie um documento em equipe/{uid} (o uid
+// aparece em Authentication › Usuários) com o campo
+// papel: "caixa", "preparo" ou "dono". Só dá para criar pelo console.
+// =========================================================
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function logado() { return request.auth != null; }
+    function ehEu(uid) { return logado() && request.auth.uid == uid; }
+    function ehEquipe() {
+      return logado() && exists(/databases/$(database)/documents/equipe/$(request.auth.uid));
+    }
+    // a alteração só mexe nestes campos
+    function soMuda(campos) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(campos);
+    }
+
+    // ---------- conta do usuário ----------
+    match /usuarios/{uid} {
+      allow read, write: if ehEu(uid);
+    }
+
+    // ---------- quem trabalha na cantina ----------
+    match /equipe/{uid} {
+      allow read: if ehEu(uid);
+      allow write: if false;            // só pelo console
+    }
+
+    // ---------- reserva do código UB-XXXX do dia ----------
+    match /codigos/{id} {
+      allow get: if logado();
+      allow create: if logado() && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if false;   // código reservado não muda de dono
+    }
+
+    // ---------- pedidos ----------
+    match /pedidos/{id} {
+
+      // o dono do pedido e a equipe da cantina podem ler
+      allow read: if logado()
+        && (resource.data.uid == request.auth.uid || ehEquipe());
+
+      // aluno cria o próprio pedido, sempre no status inicial certo
+      allow create: if logado()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.ativo == true
+        && request.resource.data.total is number
+        && request.resource.data.total > 0
+        && request.resource.data.itens is list
+        && request.resource.data.itens.size() > 0
+        && request.resource.data.codigo is string
+        && (
+          (request.resource.data.pagamento == 'pix'
+            && request.resource.data.status == 'aguardando_pix')
+          || (request.resource.data.pagamento != 'pix'
+            && request.resource.data.status == 'recebido')
+        );
+
+      // aluno só pode: avisar que pagou o Pix, ou deixar o Pix vencer
+      allow update: if ehEu(resource.data.uid)
+        && resource.data.status == 'aguardando_pix'
+        && soMuda(['status', 'ativo', 'atualizadoEm'])
+        && (
+          (request.resource.data.status == 'aguardando_conferencia'
+            && request.resource.data.ativo == true)
+          || (request.resource.data.status == 'cancelado'
+            && request.resource.data.ativo == false)
+        );
+
+      // cantina (caixa / preparo / dono) muda o status
+      allow update: if ehEquipe()
+        && soMuda(['status', 'ativo', 'atualizadoEm', 'atualizadoPor'])
+        && request.resource.data.status in [
+          'aguardando_conferencia', 'recebido', 'em_preparo', 'pronto',
+          'retirado', 'cancelado', 'nao_retirado'
+        ];
+
+      allow delete: if false;
+    }
+  }
+}
