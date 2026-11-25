@@ -1,0 +1,11 @@
+# dependências dos testes (npm install)
+node_modules/
+
+# arquivos de log do emulador do Firebase
+firestore-debug.log
+firebase-debug.log
+*.log
+
+# sistema
+.DS_Store
+Thumbs.db
