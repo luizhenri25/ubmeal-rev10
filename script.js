@@ -464,10 +464,13 @@ const SLOTS = [
   { id: '15:20', hora: '15h20', label: 'recreio da tarde' }
 ];
 
+/* "cartao" fica desativado (off) até existir cobrança de verdade (item 22 do
+   backlog, Won't): sem gateway, o pedido iria para o preparo sem ser pago.
+   Quem quiser pagar com cartão escolhe "Pagar na retirada" e usa a maquininha. */
 const PAGAMENTOS = [
   { id: 'pix',    nome: 'Pix na hora',                  desc: 'QR code aparece após confirmar.',   tag: 'instantâneo' },
-  { id: 'cartao', nome: 'Cartão de crédito ou débito',  desc: '',                                  tag: 'salvo' },
-  { id: 'balcao', nome: 'Pagar na retirada',            desc: 'Dinheiro ou maquininha no balcão.', tag: 'no local' },
+  { id: 'cartao', nome: 'Cartão de crédito ou débito',  desc: 'Ainda não disponível no app. Para pagar com cartão, escolha Pagar na retirada e use a maquininha.', tag: 'em breve', off: true },
+  { id: 'balcao', nome: 'Pagar na retirada',            desc: 'Dinheiro ou cartão na maquininha do balcão.', tag: 'no local' },
   { id: 'saldo',  nome: 'Saldo UBMeal',                 desc: 'Carteira pré-paga da instituição.', tag: '' }
 ];
 
@@ -1134,15 +1137,9 @@ function renderCarrinho() {
 /* ---------------------------------------------------------
    6. PAGAMENTO E PIX
    --------------------------------------------------------- */
-function descPagamento(p) {
-  if (p.id !== 'cartao') return p.desc;
-  const c = estado.cartoes[0];
-  return c ? c.bandeira + ' •••• ' + c.last4 + ' · ' + c.tipo
-           : 'Nenhum cartão salvo. Adicione em Conta › Formas de pagamento.';
-}
+function descPagamento(p) { return p.desc; }
 function tagPagamento(p) {
-  if (p.id === 'saldo')  return brl(estado.saldo);
-  if (p.id === 'cartao') return estado.cartoes.length ? 'salvo' : 'vazio';
+  if (p.id === 'saldo') return brl(estado.saldo);
   return p.tag;
 }
 
@@ -1175,12 +1172,14 @@ function renderCheckout() {
   $('#lblPagamento').textContent = (ehResponsavel() ? '03' : '02') + ' · Forma de pagamento';
 
   const tot = subtotal();
+  if (PAGAMENTOS.some(p => p.id === estado.pagamento && p.off)) estado.pagamento = 'pix';
 
   $('#pags').innerHTML = PAGAMENTOS.map(p => {
     const semSaldo = p.id === 'saldo' && estado.saldo < tot;
+    const desligado = p.off || semSaldo;
     const desc = semSaldo ? 'Saldo insuficiente para este pedido.' : descPagamento(p);
     return `
-    <button class="optcard pag ${estado.pagamento === p.id ? 'is-on' : ''} ${semSaldo ? 'pag--off' : ''}" data-act="pagamento" data-val="${p.id}">
+    <button class="optcard pag ${estado.pagamento === p.id ? 'is-on' : ''} ${desligado ? 'pag--off' : ''}" data-act="pagamento" data-val="${p.id}" ${p.off ? 'aria-disabled="true"' : ''}>
       <span class="radio"></span>
       <span style="flex:1;min-width:0">
         <strong>${esc(p.nome)}</strong>
@@ -1245,8 +1244,9 @@ async function confirmarPedido() {
     const el = $('#inFilho'); if (el) el.focus();
     return;
   }
-  if (estado.pagamento === 'cartao' && !estado.cartoes.length) {
-    aviso('Adicione um cartão em Conta › Formas de pagamento');
+  const forma = PAGAMENTOS.find(p => p.id === estado.pagamento);
+  if (!forma || forma.off) {
+    aviso('Pagamento com cartão ainda não está disponível. Escolha Pagar na retirada.');
     return;
   }
   if (estado.pagamento === 'saldo' && estado.saldo < total) {
@@ -1662,7 +1662,8 @@ function renderModal() {
         : '<div class="vazio"><strong>Nenhum cartão salvo</strong>Adicione um cartão para pagar mais rápido.</div>'}
       <button class="btn btn--dashed btn--block mt-md" data-act="add-cartao">+ Adicionar cartão</button>
       <button class="btn btn--outline btn--block" style="margin-top:10px" data-act="trocar-senha">Trocar senha agora</button>
-      <p class="pix__nota nota--esq">A senha vale ${DIAS_SENHA} dias${estado.senhaEm ? ' · próxima troca em ' + proximaSenha() : ''}.</p>`;
+      <p class="pix__nota nota--esq">A senha vale ${DIAS_SENHA} dias${estado.senhaEm ? ' · próxima troca em ' + proximaSenha() : ''}.</p>
+      <p class="pix__nota nota--esq">O pagamento com cartão pelo app ainda não está disponível. Para pagar com cartão, escolha <strong>Pagar na retirada</strong> e use a maquininha do balcão.</p>`;
     return;
   }
 
@@ -1904,7 +1905,11 @@ document.addEventListener('click', (ev) => {
 
     case 'retirada':   estado.retirada = val; renderCheckout(); break;
     case 'slot':       estado.slot = val; renderCheckout(); break;
-    case 'pagamento':  estado.pagamento = val; renderCheckout(); break;
+    case 'pagamento': {
+      const p = PAGAMENTOS.find(x => x.id === val);
+      if (p && p.off) { aviso('Cartão pelo app ainda não está disponível · use Pagar na retirada'); return; }
+      estado.pagamento = val; renderCheckout(); break;
+    }
 
     case 'confirmar':  confirmarPedido(); break;
     case 'copiar-pix': copiarPix(); break;

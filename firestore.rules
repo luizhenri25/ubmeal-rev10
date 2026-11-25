@@ -134,7 +134,7 @@ service cloud.firestore {
         && codigoReservado(id)
         // status inicial certo para cada forma de pagamento
         && ((p.pagamento == 'pix' && p.status == 'aguardando_pix')
-            || (p.pagamento != 'pix' && p.status == 'recebido'));
+            || (p.pagamento in ['saldo', 'balcao'] && p.status == 'recebido'));
     }
 
     // ordem permitida do status (ver o diagrama no manual técnico)
