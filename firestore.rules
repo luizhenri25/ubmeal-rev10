@@ -8,18 +8,78 @@ rules_version = '2';
 // Quem é da cantina: crie um documento em equipe/{uid} (o uid
 // aparece em Authentication › Usuários) com o campo
 // papel: "caixa", "preparo" ou "dono". Só dá para criar pelo console.
+//
+// Todo valor em dinheiro é um número inteiro em centavos
+// (1250 = R$ 12,50), para a soma nunca dar 0,30000000000000004.
 // =========================================================
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // ---------- ajudantes ----------
     function logado() { return request.auth != null; }
     function ehEu(uid) { return logado() && request.auth.uid == uid; }
     function ehEquipe() {
       return logado() && exists(/databases/$(database)/documents/equipe/$(request.auth.uid));
     }
+    function caminho(colecao, id) { return /databases/$(database)/documents/$(colecao)/$(id); }
+
     // a alteração só mexe nestes campos
     function soMuda(campos) {
       return request.resource.data.diff(resource.data).affectedKeys().hasOnly(campos);
+    }
+
+    // ---------- cardápio: preço oficial de cada produto, em centavos ----------
+    // Igual à constante PRODUTOS do script.js. Mudou um preço lá? Mude aqui também.
+    // (Quando o cardápio for para a coleção produtos, item 12 do backlog,
+    // esta tabela sai daqui.)
+    function precos() {
+      return {
+        'coxinha': 750, 'paoqueijo': 600, 'esfiha': 700, 'empada': 800,
+        'xburguer': 1800, 'misto': 950, 'natural': 1100, 'hotdog': 1400,
+        'suco': 800, 'refri': 650, 'cafe': 500, 'agua': 350,
+        'brigadeiro': 450, 'bolo': 700, 'comborec': 1350, 'comboalm': 2600
+      };
+    }
+
+    // ---------- itens do pedido (no máximo 10 linhas) ----------
+    function itemOk(itens, i, tabela) {
+      return itens.size() <= i || (
+        itens[i] is map
+        && itens[i].keys().hasAll(['id', 'nome', 'precoCentavos', 'qty', 'obs'])
+        && itens[i].keys().hasOnly(['id', 'nome', 'precoCentavos', 'qty', 'obs'])
+        && itens[i].id in tabela
+        && itens[i].precoCentavos == tabela[itens[i].id]
+        && itens[i].qty is int && itens[i].qty >= 1 && itens[i].qty <= 20
+        && itens[i].nome is string
+        && itens[i].obs is string && itens[i].obs.size() <= 140
+      );
+    }
+    function itensOk(itens, tabela) {
+      return itens is list && itens.size() >= 1 && itens.size() <= 10
+        && itemOk(itens, 0, tabela) && itemOk(itens, 1, tabela)
+        && itemOk(itens, 2, tabela) && itemOk(itens, 3, tabela)
+        && itemOk(itens, 4, tabela) && itemOk(itens, 5, tabela)
+        && itemOk(itens, 6, tabela) && itemOk(itens, 7, tabela)
+        && itemOk(itens, 8, tabela) && itemOk(itens, 9, tabela);
+    }
+    // subtotal da linha i (0 se a linha não existir)
+    function linha(itens, i) {
+      return itens.size() > i ? itens[i].precoCentavos * itens[i].qty : 0;
+    }
+    function somaItens(itens) {
+      return linha(itens, 0) + linha(itens, 1) + linha(itens, 2) + linha(itens, 3)
+        + linha(itens, 4) + linha(itens, 5) + linha(itens, 6) + linha(itens, 7)
+        + linha(itens, 8) + linha(itens, 9);
+    }
+
+    // ---------- o código UB-XXXX foi reservado junto com este pedido ----------
+    function codigoReservado(id) {
+      let p = request.resource.data;
+      let chave = p.dia + '_' + p.codigo;
+      return p.codigo is string && p.codigo.matches('UB-[0-9]{4}')
+        && p.dia is string && p.dia.matches('[0-9]{4}-[0-9]{2}-[0-9]{2}')
+        && !exists(caminho('codigos', chave))
+        && getAfter(caminho('codigos', chave)).data.pedidoId == id;
     }
 
     // ---------- conta do usuário ----------
@@ -36,32 +96,55 @@ service cloud.firestore {
     // ---------- reserva do código UB-XXXX do dia ----------
     match /codigos/{id} {
       allow get: if logado();
-      allow create: if logado() && request.resource.data.uid == request.auth.uid;
+      allow create: if logado()
+        && request.resource.data.keys().hasOnly(['uid', 'pedidoId', 'criadoEm'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.criadoEm == request.time
+        && request.resource.data.pedidoId is string
+        // o pedido gravado no mesmo lote é deste aluno e usa exatamente este código
+        && getAfter(caminho('pedidos', request.resource.data.pedidoId)).data.uid == request.auth.uid
+        && getAfter(caminho('pedidos', request.resource.data.pedidoId)).data.dia + '_'
+           + getAfter(caminho('pedidos', request.resource.data.pedidoId)).data.codigo == id;
       allow update, delete: if false;   // código reservado não muda de dono
     }
 
     // ---------- pedidos ----------
+    function pedidoNovoOk(id) {
+      let p = request.resource.data;
+      let agora = request.time.toMillis();
+      return p.keys().hasOnly(['uid', 'nome', 'email', 'tipo', 'filho', 'itens',
+                               'totalCentavos', 'pagamento', 'pagamentoNome', 'retirada',
+                               'horario', 'status', 'expiraEm', 'saldoDepoisCentavos',
+                               'codigo', 'dia', 'ativo', 'criadoEm', 'atualizadoEm'])
+        && p.uid == request.auth.uid
+        && p.email == request.auth.token.email
+        && p.nome is string && p.nome.size() >= 1 && p.nome.size() <= 80
+        && p.tipo in ['faculdade', 'basica', 'funcionario', 'pais']
+        && p.filho is string && p.filho.size() <= 80
+        && (p.tipo != 'pais' || p.filho.size() >= 1)
+        && p.ativo == true
+        && p.criadoEm == request.time && p.atualizadoEm == request.time
+        // preço de cada item = cardápio; total = soma dos itens
+        && itensOk(p.itens, precos())
+        && p.totalCentavos is int && p.totalCentavos > 0
+        && p.totalCentavos == somaItens(p.itens)
+        && p.pagamentoNome is string && p.pagamentoNome.size() <= 40
+        && ((p.retirada == 'horario' && p.horario in ['09:40', '10:15', '12:00', '15:20'])
+            || (p.retirada == 'fila' && p.horario == null))
+        && codigoReservado(id)
+        // status inicial certo para cada forma de pagamento
+        && ((p.pagamento == 'pix' && p.status == 'aguardando_pix')
+            || (p.pagamento != 'pix' && p.status == 'recebido'));
+    }
+
     match /pedidos/{id} {
 
       // o dono do pedido e a equipe da cantina podem ler
       allow read: if logado()
         && (resource.data.uid == request.auth.uid || ehEquipe());
 
-      // aluno cria o próprio pedido, sempre no status inicial certo
-      allow create: if logado()
-        && request.resource.data.uid == request.auth.uid
-        && request.resource.data.ativo == true
-        && request.resource.data.total is number
-        && request.resource.data.total > 0
-        && request.resource.data.itens is list
-        && request.resource.data.itens.size() > 0
-        && request.resource.data.codigo is string
-        && (
-          (request.resource.data.pagamento == 'pix'
-            && request.resource.data.status == 'aguardando_pix')
-          || (request.resource.data.pagamento != 'pix'
-            && request.resource.data.status == 'recebido')
-        );
+      // aluno cria o próprio pedido, com preços, total, código e status inicial conferidos
+      allow create: if logado() && pedidoNovoOk(id);
 
       // aluno só pode: avisar que pagou o Pix, ou deixar o Pix vencer
       allow update: if ehEu(resource.data.uid)

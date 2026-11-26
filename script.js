@@ -112,12 +112,13 @@ function carregarNuvem() {
       if (d.filho) estado.filho = d.filho;
       if (d.foto) estado.foto = d.foto;
       if (typeof d.fotoEm === 'number') estado.fotoEm = d.fotoEm;
-      if (typeof d.saldo === 'number') estado.saldo = d.saldo;
+      /* saldo em centavos; o campo antigo "saldo" (em reais) não é mais lido */
+      estado.saldo = Number.isInteger(d.saldoCentavos) ? d.saldoCentavos : 0;
       if (typeof d.senhaPag === 'string') estado.senhaPag = d.senhaPag;
       if (typeof d.senhaEm === 'number') estado.senhaEm = d.senhaEm;
       if (Array.isArray(d.cartoes)) estado.cartoes = d.cartoes;
       if (Array.isArray(d.carrinho)) estado.carrinho = d.carrinho;
-      if (Array.isArray(d.historico)) estado.historico = d.historico;
+      if (Array.isArray(d.historico)) estado.historico = normalizarHistorico(d.historico);
       if (d.notif) estado.notif = { promo: !!d.notif.promo, pronto: !!d.notif.pronto };
       /* o pedido em andamento agora mora na coleção "pedidos" (ver carregarPedidoAtivo) */
       return true;
@@ -140,7 +141,7 @@ function salvarNuvem() {
       filho: estado.filho,
       foto: estado.foto,
       fotoEm: estado.fotoEm,
-      saldo: estado.saldo,
+      saldoCentavos: estado.saldo,
       senhaPag: estado.senhaPag,
       senhaEm: estado.senhaEm,
       cartoes: estado.cartoes,
@@ -311,20 +312,20 @@ function pedidoDaNuvem(id, d) {
     id: id,
     status: d.status,
     codigo: d.codigo,
-    total: d.total,
+    total: centavosDe(d.totalCentavos, d.total),
     resumo: itens.map(i => i.qty + '× ' + i.nome).join(', '),
     itens: itens,
     tint: prim ? prim.tint : '#F0E4C6',
     data: quando.getDate() + ' ' + MESES[quando.getMonth()],
     pagamento: d.pagamentoNome || '',
     viaSaldo: d.pagamento === 'saldo',
-    saldoDepois: typeof d.saldoDepois === 'number' ? d.saldoDepois : undefined,
+    saldoDepois: Number.isInteger(d.saldoDepoisCentavos) ? d.saldoDepoisCentavos : undefined,
     retirada: d.retirada === 'horario' && slot ? 'Hoje, ' + slot.hora : 'Fila · avisamos quando ficar pronto',
     texto: d.retirada === 'horario' && slot
       ? 'Retirada hoje às ' + slot.hora + ' (' + slot.label + '), no balcão da ' + CANTINA + '.'
       : 'Você entrou na fila. Avisamos assim que o pedido estiver pronto para retirada.',
     filho: d.filho || '',
-    pix: d.pagamento === 'pix' ? pixPayload(PIX_CANTINA, d.total) : '',
+    pix: d.pagamento === 'pix' ? pixPayload(PIX_CANTINA, centavosDe(d.totalCentavos, d.total)) : '',
     expiraEm: d.expiraEm || 0
   };
 }
@@ -420,23 +421,24 @@ const CATS = [
   { id: 'combos',    nome: 'Combos' }
 ];
 
+/* preço em centavos: 750 = R$ 7,50 (o firestore.rules tem a mesma tabela) */
 const PRODUTOS = [
-  { id: 'coxinha',    nome: 'Coxinha de frango',        desc: 'Massa crocante, recheio de frango desfiado com catupiry.', preco: 7.5,  cat: 'salgados', tint: '#F3DCBE', pop: true },
-  { id: 'paoqueijo',  nome: 'Pão de queijo (2 un.)',    desc: 'Assado na hora, queijo minas curado.',                     preco: 6,    cat: 'salgados', tint: '#F0E4C6', pop: true },
-  { id: 'esfiha',     nome: 'Esfiha de carne',          desc: 'Aberta, carne temperada com limão.',                       preco: 7,    cat: 'salgados', tint: '#EFD9C4' },
-  { id: 'empada',     nome: 'Empada de palmito',        desc: 'Massa amanteigada com palmito cremoso.',                   preco: 8,    cat: 'salgados', tint: '#F2E3C8' },
-  { id: 'xburguer',   nome: 'X-Burguer UBMeal',         desc: 'Blend 120 g, queijo prato, alface, tomate e molho da casa.', preco: 18, cat: 'lanches',  tint: '#EFCFAE', pop: true },
-  { id: 'misto',      nome: 'Misto quente',             desc: 'Pão de forma na chapa, presunto e queijo.',                preco: 9.5,  cat: 'lanches',  tint: '#F1DEC2' },
-  { id: 'natural',    nome: 'Sanduíche natural',        desc: 'Pão integral, frango, cenoura e requeijão light.',         preco: 11,   cat: 'lanches',  tint: '#DFEAD4' },
-  { id: 'hotdog',     nome: 'Hot dog completo',         desc: 'Salsicha, purê, batata palha, milho e ervilha.',           preco: 14,   cat: 'lanches',  tint: '#F1D5C4' },
-  { id: 'suco',       nome: 'Suco de laranja 300 ml',   desc: 'Espremido na hora, sem açúcar.',                           preco: 8,    cat: 'bebidas',  tint: '#F7E2B8', pop: true },
-  { id: 'refri',      nome: 'Refrigerante lata',        desc: 'Escolha entre cola, guaraná ou limão.',                    preco: 6.5,  cat: 'bebidas',  tint: '#DCE4F2' },
-  { id: 'cafe',       nome: 'Café com leite',           desc: 'Copo 200 ml, coado na hora.',                              preco: 5,    cat: 'bebidas',  tint: '#E3D2C0' },
-  { id: 'agua',       nome: 'Água mineral 500 ml',      desc: 'Com ou sem gás.',                                          preco: 3.5,  cat: 'bebidas',  tint: '#DFEBF0' },
-  { id: 'brigadeiro', nome: 'Brigadeiro gourmet',       desc: 'Chocolate belga com granulado crocante.',                  preco: 4.5,  cat: 'doces',    tint: '#E6D3C6' },
-  { id: 'bolo',       nome: 'Bolo de cenoura (fatia)',  desc: 'Cobertura generosa de chocolate.',                         preco: 7,    cat: 'doces',    tint: '#F2D9B4' },
-  { id: 'comborec',   nome: 'Combo Recreio',            desc: 'Coxinha + suco de laranja 300 ml.',                        preco: 13.5, cat: 'combos',   tint: '#F6DCC0', pop: true },
-  { id: 'comboalm',   nome: 'Combo Almoço',             desc: 'X-Burguer + batata + refrigerante lata.',                  preco: 26,   cat: 'combos',   tint: '#EFCBA8' }
+  { id: 'coxinha',    nome: 'Coxinha de frango',        desc: 'Massa crocante, recheio de frango desfiado com catupiry.', preco: 750,  cat: 'salgados', tint: '#F3DCBE', pop: true },
+  { id: 'paoqueijo',  nome: 'Pão de queijo (2 un.)',    desc: 'Assado na hora, queijo minas curado.',                     preco: 600,  cat: 'salgados', tint: '#F0E4C6', pop: true },
+  { id: 'esfiha',     nome: 'Esfiha de carne',          desc: 'Aberta, carne temperada com limão.',                       preco: 700,  cat: 'salgados', tint: '#EFD9C4' },
+  { id: 'empada',     nome: 'Empada de palmito',        desc: 'Massa amanteigada com palmito cremoso.',                   preco: 800,  cat: 'salgados', tint: '#F2E3C8' },
+  { id: 'xburguer',   nome: 'X-Burguer UBMeal',         desc: 'Blend 120 g, queijo prato, alface, tomate e molho da casa.', preco: 1800, cat: 'lanches',  tint: '#EFCFAE', pop: true },
+  { id: 'misto',      nome: 'Misto quente',             desc: 'Pão de forma na chapa, presunto e queijo.',                preco: 950,  cat: 'lanches',  tint: '#F1DEC2' },
+  { id: 'natural',    nome: 'Sanduíche natural',        desc: 'Pão integral, frango, cenoura e requeijão light.',         preco: 1100, cat: 'lanches',  tint: '#DFEAD4' },
+  { id: 'hotdog',     nome: 'Hot dog completo',         desc: 'Salsicha, purê, batata palha, milho e ervilha.',           preco: 1400, cat: 'lanches',  tint: '#F1D5C4' },
+  { id: 'suco',       nome: 'Suco de laranja 300 ml',   desc: 'Espremido na hora, sem açúcar.',                           preco: 800,  cat: 'bebidas',  tint: '#F7E2B8', pop: true },
+  { id: 'refri',      nome: 'Refrigerante lata',        desc: 'Escolha entre cola, guaraná ou limão.',                    preco: 650,  cat: 'bebidas',  tint: '#DCE4F2' },
+  { id: 'cafe',       nome: 'Café com leite',           desc: 'Copo 200 ml, coado na hora.',                              preco: 500,  cat: 'bebidas',  tint: '#E3D2C0' },
+  { id: 'agua',       nome: 'Água mineral 500 ml',      desc: 'Com ou sem gás.',                                          preco: 350,  cat: 'bebidas',  tint: '#DFEBF0' },
+  { id: 'brigadeiro', nome: 'Brigadeiro gourmet',       desc: 'Chocolate belga com granulado crocante.',                  preco: 450,  cat: 'doces',    tint: '#E6D3C6' },
+  { id: 'bolo',       nome: 'Bolo de cenoura (fatia)',  desc: 'Cobertura generosa de chocolate.',                         preco: 700,  cat: 'doces',    tint: '#F2D9B4' },
+  { id: 'comborec',   nome: 'Combo Recreio',            desc: 'Coxinha + suco de laranja 300 ml.',                        preco: 1350, cat: 'combos',   tint: '#F6DCC0', pop: true },
+  { id: 'comboalm',   nome: 'Combo Almoço',             desc: 'X-Burguer + batata + refrigerante lata.',                  preco: 2600, cat: 'combos',   tint: '#EFCBA8' }
 ];
 
 const TIPOS = [
@@ -466,6 +468,9 @@ const DIAS_FOTO = 60;      // intervalo mínimo entre trocas de foto
 const DIAS_SENHA = 90;     // validade da senha das formas de pagamento
 const MAX_QTD = 20;        // limite de unidades do mesmo item no carrinho
 const MAX_OBS = 140;       // tamanho máximo da observação de um item
+const MAX_LINHAS = 10;     // itens diferentes por pedido (o firestore.rules confere até 10)
+const RECARGA_MIN = 100;         // R$ 1,00 (centavos)
+const RECARGA_MAX = 50000;       // R$ 500,00 (centavos)
 
 const PIX_RECARGA = { chave: '24999466024', nome: 'NOAN RODRIGUES', cidade: 'BARRA MANSA' };
 const PIX_CANTINA = { chave: 'ubmeal@cantina.edu.br', nome: 'UBMEAL CANTINA', cidade: 'BARRA MANSA' };
@@ -498,7 +503,7 @@ const estado = {
   pedidoPronto: false,   // vira true quando a cantina marcar o pedido como pronto
   historico: [],
   abaPedidos: 'atual',
-  saldo: SALDO_INICIAL,
+  saldo: SALDO_INICIAL,  // em centavos
   senhaPag: null,
   senhaEm: 0,            // quando a senha foi criada
   cartoes: [],
@@ -514,9 +519,13 @@ const estado = {
   recarga: { etapa: 'valor', valor: 0, payload: '' }
 };
 
-const MEMORIA = 'ubmeal.v1';
+/* v2: a partir de 24/11/2026 os valores ficam em centavos.
+   Os dados da v1 (em reais) são descartados: com o Firebase ligado,
+   tudo volta da nuvem no login. */
+const MEMORIA = 'ubmeal.v2';
+const MEMORIA_ANTIGA = 'ubmeal.v1';
 
-function salvar() {
+function salvarLocal() {
   try {
     localStorage.setItem(MEMORIA, JSON.stringify({
       uid: estado.uid,
@@ -529,7 +538,7 @@ function salvar() {
       telefone: estado.telefone,
       carrinho: estado.carrinho,
       historico: estado.historico,
-      saldo: estado.saldo,
+      saldoCentavos: estado.saldo,
       pedido: estado.pedido,
       pago: estado.pago,
       pedidoPronto: estado.pedidoPronto,
@@ -540,10 +549,15 @@ function salvar() {
       notif: estado.notif
     }));
   } catch (e) { /* navegador sem localStorage */ }
+}
+
+function salvar() {
+  salvarLocal();
   salvarNuvem();
 }
 
 function carregar() {
+  try { localStorage.removeItem(MEMORIA_ANTIGA); } catch (e) { /* ignora */ }
   try {
     const d = JSON.parse(localStorage.getItem(MEMORIA) || '{}');
     if (d.uid) estado.uid = d.uid;
@@ -556,9 +570,9 @@ function carregar() {
     if (d.telefone) estado.telefone = d.telefone;
     if (d.filho) estado.filho = d.filho;
     if (Array.isArray(d.carrinho))  estado.carrinho  = d.carrinho;
-    if (Array.isArray(d.historico)) estado.historico = d.historico;
+    if (Array.isArray(d.historico)) estado.historico = normalizarHistorico(d.historico);
     if (Array.isArray(d.cartoes))   estado.cartoes   = d.cartoes;
-    if (typeof d.saldo === 'number') estado.saldo = d.saldo;
+    if (Number.isInteger(d.saldoCentavos)) estado.saldo = d.saldoCentavos;
     if (typeof d.senhaPag === 'string') estado.senhaPag = d.senhaPag;
     if (typeof d.senhaEm === 'number') estado.senhaEm = d.senhaEm;
     if (d.notif) estado.notif = { promo: !!d.notif.promo, pronto: !!d.notif.pronto };
@@ -581,11 +595,33 @@ function carregar() {
    --------------------------------------------------------- */
 const $  = (s) => document.querySelector(s);
 const $$ = (s) => Array.from(document.querySelectorAll(s));
-const brl = (n) => 'R$ ' + Number(n).toFixed(2).replace('.', ',');
+/* DINHEIRO: todo valor no app é um número inteiro em centavos (1250 = R$ 12,50).
+   Somar inteiros nunca dá 0,30000000000000004, e as regras do Firestore
+   conseguem conferir o total exato do pedido. Só vira "R$ 12,50" na tela. */
+const brl = (c) => 'R$ ' + (Math.round(Number(c) || 0) / 100).toFixed(2).replace('.', ',');
+/* valor gravado em centavos; se só existir o campo antigo em reais, converte */
+const centavosDe = (centavos, reais) =>
+  Number.isInteger(centavos) ? centavos : Math.round((Number(reais) || 0) * 100);
+/* "12,50" ou "12.50" digitado pela pessoa → 1250 */
+function paraCentavos(texto) {
+  const t = String(texto || '').trim().replace(/\s/g, '');
+  const n = parseFloat(t.includes(',') ? t.replace(/\./g, '').replace(',', '.') : t);
+  return Number.isFinite(n) ? Math.round(n * 100) : 0;
+}
 const produto = (id) => PRODUTOS.find(p => p.id === id);
 const slug = (p) => p.nome.split(' ')[0].toLowerCase();
-const arred = (n) => Math.round(n * 100) / 100;   // dinheiro com 2 casas, sem 0,1 + 0,2 = 0,30000000000000004
 const esc = (t) => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+/* histórico salvo antes de 24/11/2026 guardava o total em reais */
+function normalizarHistorico(lista) {
+  return lista.filter(h => h && typeof h === 'object').map(h => ({
+    resumo: h.resumo || '',
+    itens: Array.isArray(h.itens) ? h.itens : [],
+    data: h.data || '',
+    totalCentavos: centavosDe(h.totalCentavos, h.total),
+    tint: h.tint || '#F0E4C6'
+  }));
+}
 
 const MESES = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
 function dataCurta() {
@@ -702,11 +738,12 @@ function crc16(txt) {
 function semAcento(t) {
   return String(t).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
 }
-function pixPayload(conta, valor) {
+/* centavos: valor em centavos (1250 vira "12.50" dentro do código Pix) */
+function pixPayload(conta, centavos) {
   const c = (id, v) => id + String(v.length).padStart(2, '0') + v;
   const gui = c('00', 'BR.GOV.BCB.PIX') + c('01', conta.chave);
   let p = c('00', '01') + c('26', gui) + c('52', '0000') + c('53', '986');
-  if (valor > 0) p += c('54', Number(valor).toFixed(2));
+  if (centavos > 0) p += c('54', (Math.round(centavos) / 100).toFixed(2));
   p += c('58', 'BR') + c('59', semAcento(conta.nome).slice(0, 25)) +
        c('60', semAcento(conta.cidade).slice(0, 15)) + c('62', c('05', '***'));
   p += '6304';
@@ -941,7 +978,7 @@ function limparCarrinho() {
     const obs = limparObs(l.obs);
     const igual = juntas.find(x => x.id === l.id && x.obs === obs);
     if (igual) igual.qty = Math.min(MAX_QTD, igual.qty + qty);
-    else juntas.push({ id: l.id, qty: qty, obs: obs });
+    else if (juntas.length < MAX_LINHAS) juntas.push({ id: l.id, qty: qty, obs: obs });
   });
   estado.carrinho = juntas;
 }
@@ -950,12 +987,12 @@ function linhas() {
   return estado.carrinho
     .map((l, i) => {
       const p = produto(l.id);
-      return p ? { i: i, p: p, qty: l.qty, obs: l.obs || '', total: arred(p.preco * l.qty) } : null;
+      return p ? { i: i, p: p, qty: l.qty, obs: l.obs || '', total: p.preco * l.qty } : null;   // centavos
     })
     .filter(Boolean);
 }
 function totalItens() { return linhas().reduce((a, l) => a + l.qty, 0); }
-function subtotal()  { return arred(linhas().reduce((a, l) => a + l.total, 0)); }
+function subtotal()  { return linhas().reduce((a, l) => a + l.total, 0); }       // centavos
 
 function adicionar(id, qty, obs) {
   const p = produto(id);
@@ -964,6 +1001,10 @@ function adicionar(id, qty, obs) {
   const o = limparObs(obs);
   const l = estado.carrinho.find(x => x.id === id && (x.obs || '') === o);
   const atual = l ? l.qty : 0;
+  if (!l && estado.carrinho.length >= MAX_LINHAS) {
+    aviso('No máximo ' + MAX_LINHAS + ' itens diferentes por pedido');
+    return;
+  }
   if (atual >= MAX_QTD) { aviso('Máximo de ' + MAX_QTD + ' unidades por item'); return; }
   const somar = Math.min(n, MAX_QTD - atual);
   if (l) l.qty += somar;
@@ -1113,7 +1154,7 @@ function renderCheckout() {
     if (!bf.dataset.pronto) {
       bf.innerHTML = `
         <p class="mono-label">02 · Quem vai retirar?</p>
-        <input class="input" id="inFilho" placeholder="Nome completo do aluno" value="${esc(estado.filho)}" />
+        <input class="input" id="inFilho" maxlength="80" placeholder="Nome completo do aluno" value="${esc(estado.filho)}" />
         <p class="pix__nota nota--esq" style="margin:-18px 0 0">A cantina só entrega o pedido para o aluno indicado aqui.</p>`;
       bf.dataset.pronto = '1';
     }
@@ -1188,7 +1229,7 @@ async function confirmarPedido() {
     return;
   }
 
-  const total = subtotal();
+  const total = subtotal();                         // centavos
 
   if (ehResponsavel() && !estado.filho.trim()) {
     aviso('Diga o nome do aluno que vai retirar');
@@ -1206,17 +1247,17 @@ async function confirmarPedido() {
 
   const ehPix = estado.pagamento === 'pix';
   const viaSaldo = estado.pagamento === 'saldo';
-  const saldoDepois = viaSaldo ? arred(estado.saldo - total) : undefined;
+  const saldoDepois = viaSaldo ? estado.saldo - total : undefined;
 
-  /* o que vai para a nuvem: os itens levam nome e preço do momento da compra */
+  /* o que vai para a nuvem: os itens levam nome e preço (em centavos) do momento da compra */
   const dados = {
     uid: estado.uid,
     nome: nomeExibido(),
     email: estado.email,
     tipo: estado.tipo,
     filho: ehResponsavel() ? estado.filho.trim() : '',
-    itens: linhas().map(l => ({ id: l.p.id, nome: l.p.nome, preco: l.p.preco, qty: l.qty, obs: l.obs })),
-    total: total,
+    itens: linhas().map(l => ({ id: l.p.id, nome: l.p.nome, precoCentavos: l.p.preco, qty: l.qty, obs: l.obs })),
+    totalCentavos: total,
     pagamento: estado.pagamento,
     pagamentoNome: nomePagamento(),
     retirada: estado.retirada,
@@ -1224,7 +1265,7 @@ async function confirmarPedido() {
     status: ehPix ? STATUS.AGUARDANDO_PIX : STATUS.RECEBIDO,
     expiraEm: ehPix ? Date.now() + PIX_MINUTOS * 60000 : null
   };
-  if (viaSaldo) dados.saldoDepois = saldoDepois;
+  if (viaSaldo) dados.saldoDepoisCentavos = saldoDepois;
 
   let id = null;
   let codigo = novoCodigo();
@@ -1280,7 +1321,7 @@ function arquivarPedido() {
     resumo: p.resumo,
     itens: (p.itens || []).map(i => ({ id: i.id, qty: i.qty, obs: i.obs || '' })),
     data: p.data,
-    total: p.total,
+    totalCentavos: p.total,
     tint: p.tint
   });
   if (estado.historico.length > 12) estado.historico.pop();
@@ -1477,7 +1518,7 @@ function renderPedidos() {
       <article class="hist">
         <span class="thumb thumb--sm" style="background-color:${h.tint || '#F0E4C6'}"></span>
         <div class="hist__txt"><strong>${esc(h.resumo)}</strong><small>${esc(h.data)} · retirado</small></div>
-        <div class="hist__dir"><strong>${brl(h.total)}</strong><button class="repetir" data-act="repetir" data-val="${i}">Repetir</button></div>
+        <div class="hist__dir"><strong>${brl(h.totalCentavos)}</strong><button class="repetir" data-act="repetir" data-val="${i}">Repetir</button></div>
       </article>`).join('')
     : `<div class="vazio"><strong>Sem pedidos anteriores</strong>Quando você retirar um pedido ele fica registrado aqui.</div>`;
 }
@@ -1660,10 +1701,10 @@ function renderModal() {
       body.innerHTML = `
         <p class="lead" style="margin-bottom:14px">A recarga é feita <strong>somente por Pix</strong>. O saldo entra assim que o pagamento for confirmado.</p>
         <div class="valores">
-          ${[10, 20, 50].map(v => `<button class="chip" data-act="recarga-valor" data-val="${v}">${brl(v)}</button>`).join('')}
+          ${[1000, 2000, 5000].map(v => `<button class="chip" data-act="recarga-valor" data-val="${v}">${brl(v)}</button>`).join('')}
         </div>
         <div class="campo"><span>valor da recarga</span>
-          <input class="input" id="inRecarga" inputmode="decimal" placeholder="0,00" value="${estado.recarga.valor ? String(estado.recarga.valor.toFixed(2)).replace('.', ',') : ''}" /></div>
+          <input class="input" id="inRecarga" inputmode="decimal" placeholder="0,00" value="${estado.recarga.valor ? (estado.recarga.valor / 100).toFixed(2).replace('.', ',') : ''}" /></div>
         <button class="btn btn--primary btn--block" data-act="recarga-gerar">Gerar Pix</button>`;
     } else {
       tit.textContent = 'Pix da recarga';
@@ -1963,15 +2004,15 @@ document.addEventListener('click', (ev) => {
       break;
 
     case 'recarga-valor':
-      $('#inRecarga').value = Number(val).toFixed(2).replace('.', ',');
+      $('#inRecarga').value = (Number(val) / 100).toFixed(2).replace('.', ',');
       break;
 
     case 'recarga-gerar': {
-      const v = parseFloat(($('#inRecarga').value || '').replace(/\./g, '').replace(',', '.'));
-      if (!v || v < 1) { aviso('Digite um valor a partir de R$ 1,00'); return; }
-      if (v > 500) { aviso('O limite por recarga é R$ 500,00'); return; }
-      estado.recarga.valor = Math.round(v * 100) / 100;
-      estado.recarga.payload = pixPayload(PIX_RECARGA, estado.recarga.valor);
+      const v = paraCentavos($('#inRecarga').value);           // centavos
+      if (v < RECARGA_MIN) { aviso('Digite um valor a partir de ' + brl(RECARGA_MIN)); return; }
+      if (v > RECARGA_MAX) { aviso('O limite por recarga é ' + brl(RECARGA_MAX)); return; }
+      estado.recarga.valor = v;
+      estado.recarga.payload = pixPayload(PIX_RECARGA, v);
       estado.recarga.etapa = 'pix';
       renderModal();
       break;
@@ -1982,7 +2023,7 @@ document.addEventListener('click', (ev) => {
       break;
 
     case 'recarga-paguei':
-      estado.saldo = Math.round((estado.saldo + estado.recarga.valor) * 100) / 100;
+      estado.saldo += estado.recarga.valor;           // centavos
       salvar(); fecharModal(); renderConta();
       aviso('Saldo atualizado · ' + brl(estado.saldo));
       break;
