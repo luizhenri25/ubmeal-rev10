@@ -55,7 +55,7 @@ function zerarDadosLocais() {
   estado.foto = ''; estado.fotoGoogle = ''; estado.fotoEm = 0;
   estado.tipo = null; estado.telefone = ''; estado.filho = '';
   estado.carrinho = []; estado.pedido = null; estado.pago = false; estado.pedidoPronto = false;
-  estado.historico = []; estado.saldo = SALDO_INICIAL; estado.recargasPendentes = [];
+  estado.historico = []; estado.saldo = SALDO_INICIAL; estado.recargas = []; estado.recargasPendentes = [];
   estado.senhaPag = null; estado.senhaEm = 0; estado.cartoes = [];
   estado.notif = { promo: false, pronto: false };
 }
@@ -191,12 +191,18 @@ function ouvirConta() {
     },
     e => console.error('Parou de ouvir a conta:', e)
   );
+  /* todas as recargas da pessoa: as em conferência aparecem na conta,
+     e as últimas 10 aparecem em Pedidos › Histórico (item 15) */
   pararRecargas = fbDb.collection('recargas')
     .where('uid', '==', estado.uid)
-    .where('status', '==', RECARGA.EM_CONFERENCIA)
     .onSnapshot(
       q => {
-        estado.recargasPendentes = q.docs.map(d => ({ id: d.id, valor: d.data().valorCentavos || 0 }));
+        const todas = q.docs.map(d => {
+          const r = d.data();
+          return { id: d.id, valor: r.valorCentavos || 0, status: r.status, quando: millis(r.criadoEm) };
+        }).sort((a, b) => b.quando - a.quando);
+        estado.recargas = todas.slice(0, 10);
+        estado.recargasPendentes = todas.filter(r => r.status === RECARGA.EM_CONFERENCIA);
         atualizarTelasDoSaldo();
       },
       e => console.error('Parou de ouvir as recargas:', e)
@@ -205,6 +211,7 @@ function ouvirConta() {
 function atualizarTelasDoSaldo() {
   if (estado.tela === 'conta') renderConta();
   if (estado.tela === 'checkout') renderCheckout();
+  if (estado.tela === 'pedidos') renderPedidos();
 }
 
 /* ---------------------------------------------------------
@@ -611,6 +618,7 @@ const estado = {
   historico: [],
   abaPedidos: 'atual',
   saldo: SALDO_INICIAL,  // em centavos
+  recargas: [],          // últimas recargas (Pedidos › Histórico)
   recargasPendentes: [], // recargas que a cantina ainda vai conferir
   senhaPag: null,
   senhaEm: 0,            // quando a senha foi criada
@@ -1638,6 +1646,19 @@ function renderPedidos() {
         <div class="hist__dir"><strong>${brl(h.totalCentavos)}</strong><button class="repetir" data-act="repetir" data-val="${i}">Repetir</button></div>
       </article>`).join('')
     : `<div class="vazio"><strong>Sem pedidos anteriores</strong>Quando você retirar um pedido ele fica registrado aqui.</div>`;
+
+  const nomesRecarga = { aguardando_conferencia: 'em conferência', conferida: 'conferida', recusada: 'recusada · Pix não encontrado' };
+  $('#historicoRecargas').innerHTML = estado.recargas.length ? `
+    <p class="mono-label">recargas de saldo</p>
+    ${estado.recargas.map(r => {
+      const d = new Date(r.quando || Date.now());
+      return `
+      <article class="hist hist--recarga">
+        <span class="thumb thumb--sm hist__pix">Pix</span>
+        <div class="hist__txt"><strong>Recarga de saldo</strong><small>${d.getDate()} ${MESES[d.getMonth()]} · ${esc(nomesRecarga[r.status] || r.status)}</small></div>
+        <div class="hist__dir"><strong>${r.status === RECARGA.RECUSADA ? '—' : '+ ' + brl(r.valor)}</strong></div>
+      </article>`;
+    }).join('')}` : '';
 }
 
 /* --- conta --- */
