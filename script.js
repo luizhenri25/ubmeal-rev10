@@ -196,24 +196,42 @@ function aplicarStatus(status) {
 
 /* grava o pedido reservando um código UB-XXXX que ninguém está usando hoje.
    A reserva fica em codigos/{dia}_{código}; a transação garante que dois
-   alunos nunca recebam o mesmo código no mesmo dia. */
+   alunos nunca recebam o mesmo código no mesmo dia.
+   Pedido pago com saldo: o débito vai NA MESMA transação, lendo o saldo da
+   nuvem (não o do aparelho). As regras conferem que o saldo caiu exatamente
+   o total do pedido; sem o débito, o pedido é recusado. */
 async function criarPedidoNuvem(dados) {
   const dia = hojeChave();
+  const refUsuario = fbDb.collection('usuarios').doc(estado.uid);
   for (let tentativa = 0; tentativa < 6; tentativa++) {
     const codigo = novoCodigo();
     const refCodigo = fbDb.collection('codigos').doc(dia + '_' + codigo);
     const refPedido = fbDb.collection('pedidos').doc();
+    let saldoDepois;
     try {
       await fbDb.runTransaction(async tx => {
+        /* primeiro todas as leituras, depois as gravações (regra das transações) */
         const reservado = await tx.get(refCodigo);
         if (reservado.exists) throw new Error('codigo-em-uso');
-        tx.set(refCodigo, { uid: estado.uid, pedidoId: refPedido.id, criadoEm: ts() });
-        tx.set(refPedido, Object.assign({}, dados, {
+        const pedido = Object.assign({}, dados, {
           codigo: codigo, dia: dia, ativo: true,
           criadoEm: ts(), atualizadoEm: ts()
-        }));
+        });
+        if (dados.pagamento === 'saldo') {
+          const conta = await tx.get(refUsuario);
+          const s = conta.exists ? conta.data().saldoCentavos : 0;
+          const saldo = Number.isInteger(s) ? s : 0;
+          if (saldo < dados.totalCentavos) {
+            const e = new Error('saldo-insuficiente'); e.saldo = saldo; throw e;
+          }
+          saldoDepois = saldo - dados.totalCentavos;
+          pedido.saldoDepoisCentavos = saldoDepois;
+          tx.update(refUsuario, { saldoCentavos: saldoDepois, ultimoPedidoSaldo: refPedido.id, atualizadoEm: ts() });
+        }
+        tx.set(refCodigo, { uid: estado.uid, pedidoId: refPedido.id, criadoEm: ts() });
+        tx.set(refPedido, pedido);
       });
-      return { id: refPedido.id, codigo: codigo };
+      return { id: refPedido.id, codigo: codigo, saldoDepois: saldoDepois };
     } catch (e) {
       if (e.message !== 'codigo-em-uso') throw e;   // erro de verdade: sobe
     }
@@ -1256,9 +1274,10 @@ async function confirmarPedido() {
 
   const ehPix = estado.pagamento === 'pix';
   const viaSaldo = estado.pagamento === 'saldo';
-  const saldoDepois = viaSaldo ? estado.saldo - total : undefined;
 
-  /* o que vai para a nuvem: os itens levam nome e preço (em centavos) do momento da compra */
+  /* o que vai para a nuvem: os itens levam nome e preço (em centavos) do momento da compra.
+     nome, email, tipo e filho também são copiados de propósito: ver "Dados copiados no pedido"
+     na estrutura do banco */
   const dados = {
     uid: estado.uid,
     nome: nomeExibido(),
@@ -1274,10 +1293,10 @@ async function confirmarPedido() {
     status: ehPix ? STATUS.AGUARDANDO_PIX : STATUS.RECEBIDO,
     expiraEm: ehPix ? Date.now() + PIX_MINUTOS * 60000 : null
   };
-  if (viaSaldo) dados.saldoDepoisCentavos = saldoDepois;
 
   let id = null;
   let codigo = novoCodigo();
+  let saldoDepois = viaSaldo ? estado.saldo - total : undefined;   // modo demonstração
 
   if (fbPronto) {
     estado.enviando = true;
@@ -1285,11 +1304,19 @@ async function confirmarPedido() {
     try {
       const r = await criarPedidoNuvem(dados);
       id = r.id; codigo = r.codigo;
+      if (viaSaldo) saldoDepois = r.saldoDepois;      // calculado com o saldo da nuvem
     } catch (e) {
       console.error('Pedido não foi gravado:', e);
-      aviso(e.code === 'permission-denied'
-        ? 'A cantina recusou o pedido. Entre de novo na conta e tente outra vez.'
-        : 'Não deu para enviar o pedido. Confira a internet e tente de novo.');
+      if (e.message === 'saldo-insuficiente') {
+        estado.saldo = e.saldo;
+        salvarLocal();
+        renderCheckout();
+        aviso('Saldo insuficiente · faltam ' + brl(total - e.saldo));
+      } else {
+        aviso(e.code === 'permission-denied'
+          ? 'A cantina recusou o pedido. Atualize a página e tente outra vez.'
+          : 'Não deu para enviar o pedido. Confira a internet e tente de novo.');
+      }
       return;                                         // carrinho e saldo continuam como estavam
     } finally {
       estado.enviando = false;
@@ -1298,6 +1325,7 @@ async function confirmarPedido() {
   }
 
   /* gravou (ou modo demonstração): só agora mexe no saldo e no carrinho */
+  if (viaSaldo) dados.saldoDepoisCentavos = saldoDepois;
   estado.pedido = pedidoDaNuvem(id, Object.assign({}, dados, { codigo: codigo }));
   aplicarStatus(dados.status);
   estado.pedidoPronto = false;

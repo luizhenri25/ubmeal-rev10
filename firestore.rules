@@ -82,6 +82,16 @@ service cloud.firestore {
         && getAfter(caminho('codigos', chave)).data.pedidoId == id;
     }
 
+    function debitouSaldo(id) {
+      let p = request.resource.data;
+      let antes = get(caminho('usuarios', request.auth.uid)).data;
+      let depois = getAfter(caminho('usuarios', request.auth.uid)).data;
+      return depois.get('ultimoPedidoSaldo', '') == id
+        && depois.saldoCentavos == antes.get('saldoCentavos', 0) - p.totalCentavos
+        && depois.saldoCentavos >= 0
+        && p.saldoDepoisCentavos == depois.saldoCentavos;
+    }
+
     // ---------- conta do usuário ----------
     match /usuarios/{uid} {
       allow read, write: if ehEu(uid);
@@ -134,7 +144,9 @@ service cloud.firestore {
         && codigoReservado(id)
         // status inicial certo para cada forma de pagamento
         && ((p.pagamento == 'pix' && p.status == 'aguardando_pix')
-            || (p.pagamento in ['saldo', 'balcao'] && p.status == 'recebido'));
+            || (p.pagamento == 'balcao' && p.status == 'recebido')
+            || (p.pagamento == 'saldo' && p.status == 'recebido'
+                && debitouSaldo(id)));
     }
 
     // ordem permitida do status (ver o diagrama no manual técnico)
