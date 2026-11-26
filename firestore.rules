@@ -1,0 +1,280 @@
+rules_version = '2';
+
+// =========================================================
+// UBMeal — regras do Cloud Firestore
+// Cole este arquivo em: Console do Firebase › Firestore Database
+// › Regras › Publicar. Antes de publicar, rode os testes:
+// npm test (ver a seção Testes do README).
+//
+// Quem é da cantina: crie um documento em equipe/{uid} (o uid
+// aparece em Authentication › Usuários) com o campo
+// papel: "caixa", "preparo" ou "dono". Só dá para criar pelo console.
+//
+// Todo valor em dinheiro é um número inteiro em centavos
+// (1250 = R$ 12,50), para a soma nunca dar 0,30000000000000004.
+// =========================================================
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- ajudantes ----------
+    function logado() { return request.auth != null; }
+    function ehEu(uid) { return logado() && request.auth.uid == uid; }
+    function ehEquipe() {
+      return logado() && exists(/databases/$(database)/documents/equipe/$(request.auth.uid));
+    }
+    function caminho(colecao, id) { return /databases/$(database)/documents/$(colecao)/$(id); }
+
+    // a alteração só mexe nestes campos
+    function soMuda(campos) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(campos);
+    }
+    function mudados() { return request.resource.data.diff(resource.data).affectedKeys(); }
+
+    // ---------- cardápio: preço oficial de cada produto, em centavos ----------
+    // Igual à constante PRODUTOS do script.js. Mudou um preço lá? Mude aqui também.
+    // (Quando o cardápio for para a coleção produtos, item 12 do backlog,
+    // esta tabela sai daqui.)
+    function precos() {
+      return {
+        'coxinha': 750, 'paoqueijo': 600, 'esfiha': 700, 'empada': 800,
+        'xburguer': 1800, 'misto': 950, 'natural': 1100, 'hotdog': 1400,
+        'suco': 800, 'refri': 650, 'cafe': 500, 'agua': 350,
+        'brigadeiro': 450, 'bolo': 700, 'comborec': 1350, 'comboalm': 2600
+      };
+    }
+
+    // ---------- itens do pedido (no máximo 10 linhas) ----------
+    function itemOk(itens, i, tabela) {
+      return itens.size() <= i || (
+        itens[i] is map
+        && itens[i].keys().hasAll(['id', 'nome', 'precoCentavos', 'qty', 'obs'])
+        && itens[i].keys().hasOnly(['id', 'nome', 'precoCentavos', 'qty', 'obs'])
+        && itens[i].id in tabela
+        && itens[i].precoCentavos == tabela[itens[i].id]
+        && itens[i].qty is int && itens[i].qty >= 1 && itens[i].qty <= 20
+        && itens[i].nome is string
+        && itens[i].obs is string && itens[i].obs.size() <= 140
+      );
+    }
+    function itensOk(itens, tabela) {
+      return itens is list && itens.size() >= 1 && itens.size() <= 10
+        && itemOk(itens, 0, tabela) && itemOk(itens, 1, tabela)
+        && itemOk(itens, 2, tabela) && itemOk(itens, 3, tabela)
+        && itemOk(itens, 4, tabela) && itemOk(itens, 5, tabela)
+        && itemOk(itens, 6, tabela) && itemOk(itens, 7, tabela)
+        && itemOk(itens, 8, tabela) && itemOk(itens, 9, tabela);
+    }
+    // subtotal da linha i (0 se a linha não existir)
+    function linha(itens, i) {
+      return itens.size() > i ? itens[i].precoCentavos * itens[i].qty : 0;
+    }
+    function somaItens(itens) {
+      return linha(itens, 0) + linha(itens, 1) + linha(itens, 2) + linha(itens, 3)
+        + linha(itens, 4) + linha(itens, 5) + linha(itens, 6) + linha(itens, 7)
+        + linha(itens, 8) + linha(itens, 9);
+    }
+
+    // ---------- o código UB-XXXX foi reservado junto com este pedido ----------
+    function codigoReservado(id) {
+      let p = request.resource.data;
+      let chave = p.dia + '_' + p.codigo;
+      return p.codigo is string && p.codigo.matches('UB-[0-9]{4}')
+        && p.dia is string && p.dia.matches('[0-9]{4}-[0-9]{2}-[0-9]{2}')
+        && !exists(caminho('codigos', chave))
+        && getAfter(caminho('codigos', chave)).data.pedidoId == id;
+    }
+
+    // ---------- pedido pago com saldo: o débito foi gravado junto ----------
+    function debitouSaldo(id) {
+      let p = request.resource.data;
+      let antes = get(caminho('usuarios', request.auth.uid)).data;
+      let depois = getAfter(caminho('usuarios', request.auth.uid)).data;
+      return depois.get('ultimoPedidoSaldo', '') == id
+        && depois.saldoCentavos == antes.get('saldoCentavos', 0) - p.totalCentavos
+        && depois.saldoCentavos >= 0
+        && p.saldoDepoisCentavos == depois.saldoCentavos;
+    }
+
+    // ---------- conta do usuário ----------
+    // campos que o aluno nunca grava sozinho:
+    // saldoCentavos (só muda pagando com saldo ou por recarga conferida),
+    // ultimoPedidoSaldo e ultimaRecarga (ligam o saldo ao pedido / à recarga),
+    // saldo (campo antigo, em reais) e senhaPag (senha antiga em texto puro:
+    // só pode ser apagada, nunca gravada de novo)
+    function contaNovaOk() {
+      let d = request.resource.data;
+      return d.get('saldoCentavos', 0) == 0
+        && !d.keys().hasAny(['ultimoPedidoSaldo', 'ultimaRecarga', 'saldo', 'senhaPag']);
+    }
+    function edicaoComum() {
+      return !mudados().hasAny(['saldoCentavos', 'ultimoPedidoSaldo', 'ultimaRecarga', 'saldo'])
+        && (!('senhaPag' in mudados()) || !('senhaPag' in request.resource.data));
+    }
+    // o aluno debita o próprio saldo só no mesmo lote em que cria o pedido pago com saldo
+    function pagouComSaldo(uid) {
+      let novo = request.resource.data;
+      let pid = novo.ultimoPedidoSaldo;
+      return soMuda(['saldoCentavos', 'ultimoPedidoSaldo', 'atualizadoEm'])
+        && pid is string
+        && !exists(caminho('pedidos', pid))
+        && getAfter(caminho('pedidos', pid)).data.uid == uid
+        && getAfter(caminho('pedidos', pid)).data.pagamento == 'saldo'
+        && novo.saldoCentavos == resource.data.get('saldoCentavos', 0)
+                                 - getAfter(caminho('pedidos', pid)).data.totalCentavos
+        && novo.saldoCentavos >= 0;
+    }
+    // a equipe credita o saldo só no mesmo lote em que marca a recarga como conferida
+    function creditouRecarga(uid) {
+      let novo = request.resource.data;
+      let rid = novo.ultimaRecarga;
+      return soMuda(['saldoCentavos', 'ultimaRecarga', 'atualizadoEm'])
+        && rid is string
+        && get(caminho('recargas', rid)).data.status == 'aguardando_conferencia'
+        && getAfter(caminho('recargas', rid)).data.status == 'conferida'
+        && getAfter(caminho('recargas', rid)).data.uid == uid
+        && novo.saldoCentavos == resource.data.get('saldoCentavos', 0)
+                                 + get(caminho('recargas', rid)).data.valorCentavos;
+    }
+
+    match /usuarios/{uid} {
+      allow read: if ehEu(uid);
+      allow create: if ehEu(uid) && contaNovaOk();
+      allow update: if (ehEu(uid) && (edicaoComum() || pagouComSaldo(uid)))
+                    || (ehEquipe() && creditouRecarga(uid));
+      allow delete: if false;
+    }
+
+    // ---------- quem trabalha na cantina ----------
+    match /equipe/{uid} {
+      allow read: if ehEu(uid);
+      allow write: if false;            // só pelo console
+    }
+
+    // ---------- reserva do código UB-XXXX do dia ----------
+    match /codigos/{id} {
+      allow get: if logado();
+      allow create: if logado()
+        && request.resource.data.keys().hasOnly(['uid', 'pedidoId', 'criadoEm'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.criadoEm == request.time
+        && request.resource.data.pedidoId is string
+        // o pedido gravado no mesmo lote é deste aluno e usa exatamente este código
+        && getAfter(caminho('pedidos', request.resource.data.pedidoId)).data.uid == request.auth.uid
+        && getAfter(caminho('pedidos', request.resource.data.pedidoId)).data.dia + '_'
+           + getAfter(caminho('pedidos', request.resource.data.pedidoId)).data.codigo == id;
+      allow update, delete: if false;   // código reservado não muda de dono
+    }
+
+    // ---------- pedidos ----------
+    function pedidoNovoOk(id) {
+      let p = request.resource.data;
+      let agora = request.time.toMillis();
+      return p.keys().hasOnly(['uid', 'nome', 'email', 'tipo', 'filho', 'itens',
+                               'totalCentavos', 'pagamento', 'pagamentoNome', 'retirada',
+                               'horario', 'status', 'expiraEm', 'saldoDepoisCentavos',
+                               'codigo', 'dia', 'ativo', 'criadoEm', 'atualizadoEm'])
+        && p.uid == request.auth.uid
+        && p.email == request.auth.token.email
+        && p.nome is string && p.nome.size() >= 1 && p.nome.size() <= 80
+        && p.tipo in ['faculdade', 'basica', 'funcionario', 'pais']
+        && p.filho is string && p.filho.size() <= 80
+        && (p.tipo != 'pais' || p.filho.size() >= 1)
+        && p.ativo == true
+        && p.criadoEm == request.time && p.atualizadoEm == request.time
+        // preço de cada item = cardápio; total = soma dos itens
+        && itensOk(p.itens, precos())
+        && p.totalCentavos is int && p.totalCentavos > 0
+        && p.totalCentavos == somaItens(p.itens)
+        && p.pagamentoNome is string && p.pagamentoNome.size() <= 40
+        && ((p.retirada == 'horario' && p.horario in ['09:40', '10:15', '12:00', '15:20'])
+            || (p.retirada == 'fila' && p.horario == null))
+        && codigoReservado(id)
+        // status inicial certo para cada forma de pagamento (cartão no app está desativado)
+        && (
+          (p.pagamento == 'pix' && p.status == 'aguardando_pix'
+            && p.expiraEm is int && p.expiraEm >= agora && p.expiraEm <= agora + 1200000
+            && !('saldoDepoisCentavos' in p))
+          || (p.pagamento == 'balcao' && p.status == 'recebido' && p.expiraEm == null
+            && !('saldoDepoisCentavos' in p))
+          || (p.pagamento == 'saldo' && p.status == 'recebido' && p.expiraEm == null
+            && debitouSaldo(id))
+        );
+    }
+
+    // ordem permitida do status (ver o diagrama no manual técnico)
+    function transicaoOk(de, para) {
+      return (de == 'aguardando_pix'         && para in ['em_preparo', 'cancelado'])
+          || (de == 'aguardando_conferencia' && para in ['em_preparo', 'cancelado'])
+          || (de == 'recebido'               && para in ['em_preparo', 'cancelado'])
+          || (de == 'em_preparo'             && para in ['pronto', 'cancelado'])
+          || (de == 'pronto'                 && para in ['retirado', 'nao_retirado']);
+    }
+    function ativoCombina() {
+      return request.resource.data.ativo
+        == !(request.resource.data.status in ['retirado', 'cancelado', 'nao_retirado']);
+    }
+
+    match /pedidos/{id} {
+
+      // o dono do pedido e a equipe da cantina podem ler
+      allow read: if logado()
+        && (resource.data.uid == request.auth.uid || ehEquipe());
+
+      // aluno cria o próprio pedido, com preços, total, código e status inicial conferidos
+      allow create: if logado() && pedidoNovoOk(id);
+
+      // aluno só pode: avisar que pagou o Pix, ou deixar o Pix vencer
+      allow update: if ehEu(resource.data.uid)
+        && resource.data.status == 'aguardando_pix'
+        && soMuda(['status', 'ativo', 'atualizadoEm'])
+        && request.resource.data.atualizadoEm == request.time
+        && request.resource.data.status in ['aguardando_conferencia', 'cancelado']
+        && ativoCombina();
+
+      // cantina (caixa / preparo / dono) muda o status, sempre para a etapa seguinte
+      allow update: if ehEquipe()
+        && soMuda(['status', 'ativo', 'atualizadoEm', 'atualizadoPor'])
+        && transicaoOk(resource.data.status, request.resource.data.status)
+        && ativoCombina()
+        && request.resource.data.atualizadoEm == request.time
+        && request.resource.data.atualizadoPor == request.auth.uid;
+
+      allow delete: if false;
+    }
+
+    // ---------- recargas de saldo (Pix conferido pela cantina) ----------
+    match /recargas/{id} {
+      allow read: if logado()
+        && (resource.data.uid == request.auth.uid || ehEquipe());
+
+      // aluno avisa que pagou; o saldo NÃO muda aqui
+      allow create: if logado()
+        && request.resource.data.keys().hasOnly(['uid', 'nome', 'email', 'valorCentavos',
+                                                 'status', 'criadoEm', 'atualizadoEm'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.nome is string && request.resource.data.nome.size() <= 80
+        && request.resource.data.valorCentavos is int
+        && request.resource.data.valorCentavos >= 100
+        && request.resource.data.valorCentavos <= 50000
+        && request.resource.data.status == 'aguardando_conferencia'
+        && request.resource.data.criadoEm == request.time
+        && request.resource.data.atualizadoEm == request.time;
+
+      // equipe confere no app do banco: conferida (credita o saldo no mesmo lote) ou recusada
+      allow update: if ehEquipe()
+        && resource.data.status == 'aguardando_conferencia'
+        && soMuda(['status', 'atualizadoEm', 'atualizadoPor'])
+        && request.resource.data.atualizadoEm == request.time
+        && request.resource.data.atualizadoPor == request.auth.uid
+        && (request.resource.data.status == 'recusada'
+            || (request.resource.data.status == 'conferida'
+                && getAfter(caminho('usuarios', resource.data.uid)).data.get('ultimaRecarga', '') == id
+                && getAfter(caminho('usuarios', resource.data.uid)).data.saldoCentavos
+                   == get(caminho('usuarios', resource.data.uid)).data.get('saldoCentavos', 0)
+                      + resource.data.valorCentavos));
+
+      allow delete: if false;
+    }
+  }
+}
