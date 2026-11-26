@@ -1154,7 +1154,7 @@ function renderCheckout() {
     if (!bf.dataset.pronto) {
       bf.innerHTML = `
         <p class="mono-label">02 · Quem vai retirar?</p>
-        <input class="input" id="inFilho" placeholder="Nome completo do aluno" value="${esc(estado.filho)}" />
+        <input class="input" id="inFilho" maxlength="80" placeholder="Nome completo do aluno" value="${esc(estado.filho)}" />
         <p class="pix__nota nota--esq" style="margin:-18px 0 0">A cantina só entrega o pedido para o aluno indicado aqui.</p>`;
       bf.dataset.pronto = '1';
     }
