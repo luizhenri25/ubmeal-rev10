@@ -468,6 +468,7 @@ const DIAS_FOTO = 60;      // intervalo mínimo entre trocas de foto
 const DIAS_SENHA = 90;     // validade da senha das formas de pagamento
 const MAX_QTD = 20;        // limite de unidades do mesmo item no carrinho
 const MAX_OBS = 140;       // tamanho máximo da observação de um item
+const MAX_LINHAS = 10;     // itens diferentes por pedido (o firestore.rules confere até 10)
 const RECARGA_MIN = 100;         // R$ 1,00 (centavos)
 const RECARGA_MAX = 50000;       // R$ 500,00 (centavos)
 
@@ -977,7 +978,7 @@ function limparCarrinho() {
     const obs = limparObs(l.obs);
     const igual = juntas.find(x => x.id === l.id && x.obs === obs);
     if (igual) igual.qty = Math.min(MAX_QTD, igual.qty + qty);
-    else juntas.push({ id: l.id, qty: qty, obs: obs });
+    else if (juntas.length < MAX_LINHAS) juntas.push({ id: l.id, qty: qty, obs: obs });
   });
   estado.carrinho = juntas;
 }
@@ -1000,6 +1001,10 @@ function adicionar(id, qty, obs) {
   const o = limparObs(obs);
   const l = estado.carrinho.find(x => x.id === id && (x.obs || '') === o);
   const atual = l ? l.qty : 0;
+  if (!l && estado.carrinho.length >= MAX_LINHAS) {
+    aviso('No máximo ' + MAX_LINHAS + ' itens diferentes por pedido');
+    return;
+  }
   if (atual >= MAX_QTD) { aviso('Máximo de ' + MAX_QTD + ' unidades por item'); return; }
   const somar = Math.min(n, MAX_QTD - atual);
   if (l) l.qty += somar;

@@ -15,14 +15,60 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // ---------- ajudantes ----------
     function logado() { return request.auth != null; }
     function ehEu(uid) { return logado() && request.auth.uid == uid; }
     function ehEquipe() {
       return logado() && exists(/databases/$(database)/documents/equipe/$(request.auth.uid));
     }
+
     // a alteração só mexe nestes campos
     function soMuda(campos) {
       return request.resource.data.diff(resource.data).affectedKeys().hasOnly(campos);
+    }
+
+    // ---------- cardápio: preço oficial de cada produto, em centavos ----------
+    // Igual à constante PRODUTOS do script.js. Mudou um preço lá? Mude aqui também.
+    // (Quando o cardápio for para a coleção produtos, item 12 do backlog,
+    // esta tabela sai daqui.)
+    function precos() {
+      return {
+        'coxinha': 750, 'paoqueijo': 600, 'esfiha': 700, 'empada': 800,
+        'xburguer': 1800, 'misto': 950, 'natural': 1100, 'hotdog': 1400,
+        'suco': 800, 'refri': 650, 'cafe': 500, 'agua': 350,
+        'brigadeiro': 450, 'bolo': 700, 'comborec': 1350, 'comboalm': 2600
+      };
+    }
+
+    // ---------- itens do pedido (no máximo 10 linhas) ----------
+    function itemOk(itens, i, tabela) {
+      return itens.size() <= i || (
+        itens[i] is map
+        && itens[i].keys().hasAll(['id', 'nome', 'precoCentavos', 'qty', 'obs'])
+        && itens[i].keys().hasOnly(['id', 'nome', 'precoCentavos', 'qty', 'obs'])
+        && itens[i].id in tabela
+        && itens[i].precoCentavos == tabela[itens[i].id]
+        && itens[i].qty is int && itens[i].qty >= 1 && itens[i].qty <= 20
+        && itens[i].nome is string
+        && itens[i].obs is string && itens[i].obs.size() <= 140
+      );
+    }
+    function itensOk(itens, tabela) {
+      return itens is list && itens.size() >= 1 && itens.size() <= 10
+        && itemOk(itens, 0, tabela) && itemOk(itens, 1, tabela)
+        && itemOk(itens, 2, tabela) && itemOk(itens, 3, tabela)
+        && itemOk(itens, 4, tabela) && itemOk(itens, 5, tabela)
+        && itemOk(itens, 6, tabela) && itemOk(itens, 7, tabela)
+        && itemOk(itens, 8, tabela) && itemOk(itens, 9, tabela);
+    }
+    // subtotal da linha i (0 se a linha não existir)
+    function linha(itens, i) {
+      return itens.size() > i ? itens[i].precoCentavos * itens[i].qty : 0;
+    }
+    function somaItens(itens) {
+      return linha(itens, 0) + linha(itens, 1) + linha(itens, 2) + linha(itens, 3)
+        + linha(itens, 4) + linha(itens, 5) + linha(itens, 6) + linha(itens, 7)
+        + linha(itens, 8) + linha(itens, 9);
     }
 
     // ---------- conta do usuário ----------
@@ -56,8 +102,9 @@ service cloud.firestore {
         && request.resource.data.ativo == true
         && request.resource.data.totalCentavos is int
         && request.resource.data.totalCentavos > 0
-        && request.resource.data.itens is list
-        && request.resource.data.itens.size() > 0
+        // preço de cada item = cardápio; total = soma dos itens
+        && itensOk(request.resource.data.itens, precos())
+        && request.resource.data.totalCentavos == somaItens(request.resource.data.itens)
         && request.resource.data.codigo is string
         && (
           (request.resource.data.pagamento == 'pix'
