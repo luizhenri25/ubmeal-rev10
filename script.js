@@ -367,7 +367,16 @@ function expirarPix() {
 }
 
 /* usado pelo painel da cantina (caixa e preparo). As regras do Firestore
-   recusam esta chamada para quem não estiver na coleção "equipe". */
+   recusam esta chamada para quem não estiver na coleção "equipe" e para
+   qualquer mudança fora da ordem do ciclo (ex.: de retirado de volta para
+   em_preparo). A ordem permitida está em PROXIMOS_STATUS. */
+const PROXIMOS_STATUS = {
+  aguardando_pix:         [STATUS.EM_PREPARO, STATUS.CANCELADO],
+  aguardando_conferencia: [STATUS.EM_PREPARO, STATUS.CANCELADO],
+  recebido:               [STATUS.EM_PREPARO, STATUS.CANCELADO],
+  em_preparo:             [STATUS.PRONTO, STATUS.CANCELADO],
+  pronto:                 [STATUS.RETIRADO, STATUS.NAO_RETIRADO]
+};
 function mudarStatusPedido(id, novoStatus) {
   return fbDb.collection('pedidos').doc(id).update({
     status: novoStatus,

@@ -137,6 +137,19 @@ service cloud.firestore {
             || (p.pagamento != 'pix' && p.status == 'recebido'));
     }
 
+    // ordem permitida do status (ver o diagrama no manual técnico)
+    function transicaoOk(de, para) {
+      return (de == 'aguardando_pix'         && para in ['em_preparo', 'cancelado'])
+          || (de == 'aguardando_conferencia' && para in ['em_preparo', 'cancelado'])
+          || (de == 'recebido'               && para in ['em_preparo', 'cancelado'])
+          || (de == 'em_preparo'             && para in ['pronto', 'cancelado'])
+          || (de == 'pronto'                 && para in ['retirado', 'nao_retirado']);
+    }
+    function ativoCombina() {
+      return request.resource.data.ativo
+        == !(request.resource.data.status in ['retirado', 'cancelado', 'nao_retirado']);
+    }
+
     match /pedidos/{id} {
 
       // o dono do pedido e a equipe da cantina podem ler
@@ -150,20 +163,17 @@ service cloud.firestore {
       allow update: if ehEu(resource.data.uid)
         && resource.data.status == 'aguardando_pix'
         && soMuda(['status', 'ativo', 'atualizadoEm'])
-        && (
-          (request.resource.data.status == 'aguardando_conferencia'
-            && request.resource.data.ativo == true)
-          || (request.resource.data.status == 'cancelado'
-            && request.resource.data.ativo == false)
-        );
+        && request.resource.data.atualizadoEm == request.time
+        && request.resource.data.status in ['aguardando_conferencia', 'cancelado']
+        && ativoCombina();
 
-      // cantina (caixa / preparo / dono) muda o status
+      // cantina (caixa / preparo / dono) muda o status, sempre para a etapa seguinte
       allow update: if ehEquipe()
         && soMuda(['status', 'ativo', 'atualizadoEm', 'atualizadoPor'])
-        && request.resource.data.status in [
-          'aguardando_conferencia', 'recebido', 'em_preparo', 'pronto',
-          'retirado', 'cancelado', 'nao_retirado'
-        ];
+        && transicaoOk(resource.data.status, request.resource.data.status)
+        && ativoCombina()
+        && request.resource.data.atualizadoEm == request.time
+        && request.resource.data.atualizadoPor == request.auth.uid;
 
       allow delete: if false;
     }
