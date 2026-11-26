@@ -56,7 +56,8 @@ function zerarDadosLocais() {
   estado.tipo = null; estado.telefone = ''; estado.filho = '';
   estado.carrinho = []; estado.pedido = null; estado.pago = false; estado.pedidoPronto = false;
   estado.historico = []; estado.saldo = SALDO_INICIAL; estado.recargas = []; estado.recargasPendentes = [];
-  estado.senhaPag = null; estado.senhaEm = 0; estado.cartoes = [];
+  estado.senhaHash = null; estado.senhaSal = null; estado.senhaPag = null; estado.senhaEm = 0;
+  estado.cartoes = [];
   estado.notif = { promo: false, pronto: false };
 }
 
@@ -118,7 +119,11 @@ function carregarNuvem() {
       /* saldo em centavos. O campo antigo "saldo" (em reais, que o próprio aluno
          conseguia alterar) não é mais lido: ver "Estrutura do banco" no manual */
       estado.saldo = Number.isInteger(d.saldoCentavos) ? d.saldoCentavos : 0;
-      if (typeof d.senhaPag === 'string') estado.senhaPag = d.senhaPag;
+      if (typeof d.senhaPagHash === 'string' && typeof d.senhaPagSal === 'string') {
+        estado.senhaHash = d.senhaPagHash; estado.senhaSal = d.senhaPagSal; estado.senhaPag = null;
+      } else if (typeof d.senhaPag === 'string') {
+        estado.senhaPag = d.senhaPag;            // senha antiga em texto puro: vira hash no próximo uso
+      }
       if (typeof d.senhaEm === 'number') estado.senhaEm = d.senhaEm;
       if (Array.isArray(d.cartoes)) estado.cartoes = d.cartoes;
       if (Array.isArray(d.carrinho)) estado.carrinho = d.carrinho;
@@ -148,7 +153,6 @@ function salvarNuvem() {
       filho: estado.filho,
       foto: estado.foto,
       fotoEm: estado.fotoEm,
-      senhaPag: estado.senhaPag,
       senhaEm: estado.senhaEm,
       cartoes: estado.cartoes,
       carrinho: estado.carrinho,
@@ -160,6 +164,11 @@ function salvarNuvem() {
       pedidoPronto: apagar,
       atualizadoEm: firebase.firestore.FieldValue.serverTimestamp()
     };
+    if (estado.senhaHash) {
+      dados.senhaPagHash = estado.senhaHash;
+      dados.senhaPagSal = estado.senhaSal;
+      dados.senhaPag = apagar;                // apaga a senha antiga em texto puro
+    }
     fbDb.collection('usuarios').doc(estado.uid).set(dados, { merge: true })
       .catch(e => console.error('Não deu para gravar na nuvem:', e));
   }, 700);
@@ -585,6 +594,7 @@ const MAX_OBS = 140;       // tamanho máximo da observação de um item
 const MAX_LINHAS = 10;     // itens diferentes por pedido (o firestore.rules confere até 10)
 const RECARGA_MIN = 100;         // R$ 1,00 (centavos)
 const RECARGA_MAX = 50000;       // R$ 500,00 (centavos)
+const PBKDF2_VOLTAS = 100000;    // custo do hash da senha de pagamento
 
 const PIX_RECARGA = { chave: '24999466024', nome: 'NOAN RODRIGUES', cidade: 'BARRA MANSA' };
 const PIX_CANTINA = { chave: 'ubmeal@cantina.edu.br', nome: 'UBMEAL CANTINA', cidade: 'BARRA MANSA' };
@@ -620,7 +630,9 @@ const estado = {
   saldo: SALDO_INICIAL,  // em centavos
   recargas: [],          // últimas recargas (Pedidos › Histórico)
   recargasPendentes: [], // recargas que a cantina ainda vai conferir
-  senhaPag: null,
+  senhaHash: null,       // hash PBKDF2 da senha de pagamento (nunca os 6 dígitos)
+  senhaSal: null,        // "sal" aleatório usado no hash
+  senhaPag: null,        // só para contas antigas: senha em texto puro, trocada pelo hash no próximo uso
   senhaEm: 0,            // quando a senha foi criada
   cartoes: [],
   notif: { promo: false, pronto: false },
@@ -635,9 +647,9 @@ const estado = {
   recarga: { etapa: 'valor', valor: 0, payload: '' }
 };
 
-/* v2: a partir de 24/11/2026 os valores ficam em centavos.
-   Os dados da v1 (em reais) são descartados: com o Firebase ligado,
-   tudo volta da nuvem no login. */
+/* v2: a partir de 24/11/2026 os valores ficam em centavos e a senha só como hash.
+   Os dados da v1 (em reais e com a senha em texto) são descartados: com o
+   Firebase ligado, tudo volta da nuvem no login. */
 const MEMORIA = 'ubmeal.v2';
 const MEMORIA_ANTIGA = 'ubmeal.v1';
 
@@ -659,7 +671,8 @@ function salvarLocal() {
       pago: estado.pago,
       pedidoPronto: estado.pedidoPronto,
       filho: estado.filho,
-      senhaPag: estado.senhaPag,
+      senhaHash: estado.senhaHash,
+      senhaSal: estado.senhaSal,
       senhaEm: estado.senhaEm,
       cartoes: estado.cartoes,
       notif: estado.notif
@@ -689,7 +702,9 @@ function carregar() {
     if (Array.isArray(d.historico)) estado.historico = normalizarHistorico(d.historico);
     if (Array.isArray(d.cartoes))   estado.cartoes   = d.cartoes;
     if (Number.isInteger(d.saldoCentavos)) estado.saldo = d.saldoCentavos;
-    if (typeof d.senhaPag === 'string') estado.senhaPag = d.senhaPag;
+    if (typeof d.senhaHash === 'string' && typeof d.senhaSal === 'string') {
+      estado.senhaHash = d.senhaHash; estado.senhaSal = d.senhaSal;
+    }
     if (typeof d.senhaEm === 'number') estado.senhaEm = d.senhaEm;
     if (d.notif) estado.notif = { promo: !!d.notif.promo, pronto: !!d.notif.pronto };
     if (d.pedido) {
@@ -739,6 +754,40 @@ function normalizarHistorico(lista) {
   }));
 }
 
+/* ----- senha de pagamento: só o hash vai para a nuvem (item 24) ----- */
+const paraHex = (bytes) => Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+const deHex = (hex) => new Uint8Array((hex.match(/../g) || []).map(h => parseInt(h, 16)));
+function temSenha() { return !!(estado.senhaHash || estado.senhaPag); }
+function novoSal() {
+  const b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  return paraHex(b);
+}
+/* PBKDF2 com SHA-256: lento de propósito, para dificultar testar as 1 milhão de senhas.
+   crypto.subtle só existe em https:// ou localhost (o app já exige isso por causa do login) */
+async function hashSenha(pin, salHex) {
+  const chave = await crypto.subtle.importKey('raw', new TextEncoder().encode(pin), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', hash: 'SHA-256', salt: deHex(salHex), iterations: PBKDF2_VOLTAS }, chave, 256);
+  return paraHex(new Uint8Array(bits));
+}
+async function definirSenha(pin, manterData) {
+  estado.senhaSal = novoSal();
+  estado.senhaHash = await hashSenha(pin, estado.senhaSal);
+  estado.senhaPag = null;
+  if (!manterData) estado.senhaEm = Date.now();
+  salvar();
+}
+async function conferirSenha(pin) {
+  if (estado.senhaHash) return (await hashSenha(pin, estado.senhaSal)) === estado.senhaHash;
+  if (estado.senhaPag) {                    // conta antiga: confere e já troca pelo hash
+    if (pin !== estado.senhaPag) return false;
+    await definirSenha(pin, true);
+    return true;
+  }
+  return false;
+}
+
 const MESES = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
 function dataCurta() {
   const d = new Date();
@@ -773,7 +822,7 @@ function proximaTroca() { return dataLonga(estado.fotoEm + DIAS_FOTO * 86400000)
 
 /* ----- senha das formas de pagamento ----- */
 function senhaVencida() {
-  if (!estado.senhaPag) return false;
+  if (!temSenha()) return false;
   if (!estado.senhaEm) return true;                 // senha antiga, sem data: pede uma nova
   return (Date.now() - estado.senhaEm) / 86400000 >= DIAS_SENHA;
 }
@@ -1764,7 +1813,7 @@ function renderModal() {
       entrar:    ['Digite sua senha', 'Seis números para abrir suas formas de pagamento.']
     };
     const t = textos[estado.senhaEtapa] || textos.entrar;
-    const vencida = estado.senhaEtapa === 'criar' && estado.senhaPag;
+    const vencida = estado.senhaEtapa === 'criar' && senhaVencida();
     tit.textContent = t[0];
     body.innerHTML = `
       <p class="lead" style="margin-bottom:6px">${t[1]}</p>
@@ -1889,7 +1938,9 @@ function renderPinDots() {
   $$('#pin .pin__box').forEach((b, i) => b.classList.toggle('is-fill', i < n));
 }
 
-function passoSenha() {
+let conferindoSenha = false;
+async function passoSenha() {
+  if (conferindoSenha) return;
   const pin = estado.pin;
   if (estado.senhaEtapa === 'criar') {
     estado.pinTmp = pin;
@@ -1898,31 +1949,35 @@ function passoSenha() {
     renderModal();
     return;
   }
-  if (estado.senhaEtapa === 'confirmar') {
-    if (pin !== estado.pinTmp) {
+  conferindoSenha = true;
+  try {
+    if (estado.senhaEtapa === 'confirmar') {
+      if (pin !== estado.pinTmp) {
+        estado.pin = '';
+        estado.pinTmp = '';
+        estado.senhaEtapa = 'criar';
+        renderModal();
+        aviso('As senhas não bateram. Tente de novo.');
+        return;
+      }
+      await definirSenha(pin, false);    // grava só o hash; reinicia os 90 dias
       estado.pin = '';
       estado.pinTmp = '';
-      estado.senhaEtapa = 'criar';
-      renderModal();
-      aviso('As senhas não bateram. Tente de novo.');
+      aviso('Senha criada · vale por ' + DIAS_SENHA + ' dias');
+      abrirModal('cartoes');
       return;
     }
-    estado.senhaPag = pin;
-    estado.senhaEm = Date.now();       // reinicia a contagem dos 90 dias
+    const certa = await conferirSenha(pin);
     estado.pin = '';
-    estado.pinTmp = '';
-    salvar();
-    aviso('Senha criada · vale por ' + DIAS_SENHA + ' dias');
-    abrirModal('cartoes');
-    return;
-  }
-  if (pin === estado.senhaPag) {
-    estado.pin = '';
-    abrirModal('cartoes');
-  } else {
+    if (certa) abrirModal('cartoes');
+    else { renderModal(); aviso('Senha incorreta'); }
+  } catch (e) {
+    console.error('Senha:', e);
     estado.pin = '';
     renderModal();
-    aviso('Senha incorreta');
+    aviso('Não deu para conferir a senha. Abra o app por https:// ou localhost.');
+  } finally {
+    conferindoSenha = false;
   }
 }
 
@@ -2141,7 +2196,7 @@ document.addEventListener('click', (ev) => {
 
     case 'conta-pagamentos':
       estado.pin = ''; estado.pinTmp = '';
-      if (!estado.senhaPag) {
+      if (!temSenha()) {
         estado.senhaEtapa = 'criar';
       } else if (senhaVencida()) {
         estado.senhaEtapa = 'criar';

@@ -98,14 +98,16 @@ service cloud.firestore {
     // campos que o aluno nunca grava sozinho:
     // saldoCentavos (só muda pagando com saldo ou por recarga conferida),
     // ultimoPedidoSaldo e ultimaRecarga (ligam o saldo ao pedido / à recarga),
-    // e saldo (campo antigo, em reais)
+    // saldo (campo antigo, em reais) e senhaPag (senha antiga em texto puro:
+    // só pode ser apagada, nunca gravada de novo)
     function contaNovaOk() {
       let d = request.resource.data;
       return d.get('saldoCentavos', 0) == 0
-        && !d.keys().hasAny(['ultimoPedidoSaldo', 'ultimaRecarga', 'saldo']);
+        && !d.keys().hasAny(['ultimoPedidoSaldo', 'ultimaRecarga', 'saldo', 'senhaPag']);
     }
     function edicaoComum() {
-      return !mudados().hasAny(['saldoCentavos', 'ultimoPedidoSaldo', 'ultimaRecarga', 'saldo']);
+      return !mudados().hasAny(['saldoCentavos', 'ultimoPedidoSaldo', 'ultimaRecarga', 'saldo'])
+        && (!('senhaPag' in mudados()) || !('senhaPag' in request.resource.data));
     }
     // o aluno debita o próprio saldo só no mesmo lote em que cria o pedido pago com saldo
     function pagouComSaldo(uid) {
