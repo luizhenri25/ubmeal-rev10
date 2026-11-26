@@ -27,6 +27,7 @@ service cloud.firestore {
     function soMuda(campos) {
       return request.resource.data.diff(resource.data).affectedKeys().hasOnly(campos);
     }
+    function mudados() { return request.resource.data.diff(resource.data).affectedKeys(); }
 
     // ---------- cardápio: preço oficial de cada produto, em centavos ----------
     // Igual à constante PRODUTOS do script.js. Mudou um preço lá? Mude aqui também.
@@ -82,6 +83,7 @@ service cloud.firestore {
         && getAfter(caminho('codigos', chave)).data.pedidoId == id;
     }
 
+    // ---------- pedido pago com saldo: o débito foi gravado junto ----------
     function debitouSaldo(id) {
       let p = request.resource.data;
       let antes = get(caminho('usuarios', request.auth.uid)).data;
@@ -93,8 +95,50 @@ service cloud.firestore {
     }
 
     // ---------- conta do usuário ----------
+    // campos que o aluno nunca grava sozinho:
+    // saldoCentavos (só muda pagando com saldo ou por recarga conferida),
+    // ultimoPedidoSaldo e ultimaRecarga (ligam o saldo ao pedido / à recarga),
+    // e saldo (campo antigo, em reais)
+    function contaNovaOk() {
+      let d = request.resource.data;
+      return d.get('saldoCentavos', 0) == 0
+        && !d.keys().hasAny(['ultimoPedidoSaldo', 'ultimaRecarga', 'saldo']);
+    }
+    function edicaoComum() {
+      return !mudados().hasAny(['saldoCentavos', 'ultimoPedidoSaldo', 'ultimaRecarga', 'saldo']);
+    }
+    // o aluno debita o próprio saldo só no mesmo lote em que cria o pedido pago com saldo
+    function pagouComSaldo(uid) {
+      let novo = request.resource.data;
+      let pid = novo.ultimoPedidoSaldo;
+      return soMuda(['saldoCentavos', 'ultimoPedidoSaldo', 'atualizadoEm'])
+        && pid is string
+        && !exists(caminho('pedidos', pid))
+        && getAfter(caminho('pedidos', pid)).data.uid == uid
+        && getAfter(caminho('pedidos', pid)).data.pagamento == 'saldo'
+        && novo.saldoCentavos == resource.data.get('saldoCentavos', 0)
+                                 - getAfter(caminho('pedidos', pid)).data.totalCentavos
+        && novo.saldoCentavos >= 0;
+    }
+    // a equipe credita o saldo só no mesmo lote em que marca a recarga como conferida
+    function creditouRecarga(uid) {
+      let novo = request.resource.data;
+      let rid = novo.ultimaRecarga;
+      return soMuda(['saldoCentavos', 'ultimaRecarga', 'atualizadoEm'])
+        && rid is string
+        && get(caminho('recargas', rid)).data.status == 'aguardando_conferencia'
+        && getAfter(caminho('recargas', rid)).data.status == 'conferida'
+        && getAfter(caminho('recargas', rid)).data.uid == uid
+        && novo.saldoCentavos == resource.data.get('saldoCentavos', 0)
+                                 + get(caminho('recargas', rid)).data.valorCentavos;
+    }
+
     match /usuarios/{uid} {
-      allow read, write: if ehEu(uid);
+      allow read: if ehEu(uid);
+      allow create: if ehEu(uid) && contaNovaOk();
+      allow update: if (ehEu(uid) && (edicaoComum() || pagouComSaldo(uid)))
+                    || (ehEquipe() && creditouRecarga(uid));
+      allow delete: if false;
     }
 
     // ---------- quem trabalha na cantina ----------
@@ -142,11 +186,16 @@ service cloud.firestore {
         && ((p.retirada == 'horario' && p.horario in ['09:40', '10:15', '12:00', '15:20'])
             || (p.retirada == 'fila' && p.horario == null))
         && codigoReservado(id)
-        // status inicial certo para cada forma de pagamento
-        && ((p.pagamento == 'pix' && p.status == 'aguardando_pix')
-            || (p.pagamento == 'balcao' && p.status == 'recebido')
-            || (p.pagamento == 'saldo' && p.status == 'recebido'
-                && debitouSaldo(id)));
+        // status inicial certo para cada forma de pagamento (cartão no app está desativado)
+        && (
+          (p.pagamento == 'pix' && p.status == 'aguardando_pix'
+            && p.expiraEm is int && p.expiraEm >= agora && p.expiraEm <= agora + 1200000
+            && !('saldoDepoisCentavos' in p))
+          || (p.pagamento == 'balcao' && p.status == 'recebido' && p.expiraEm == null
+            && !('saldoDepoisCentavos' in p))
+          || (p.pagamento == 'saldo' && p.status == 'recebido' && p.expiraEm == null
+            && debitouSaldo(id))
+        );
     }
 
     // ordem permitida do status (ver o diagrama no manual técnico)
@@ -186,6 +235,41 @@ service cloud.firestore {
         && ativoCombina()
         && request.resource.data.atualizadoEm == request.time
         && request.resource.data.atualizadoPor == request.auth.uid;
+
+      allow delete: if false;
+    }
+
+    // ---------- recargas de saldo (Pix conferido pela cantina) ----------
+    match /recargas/{id} {
+      allow read: if logado()
+        && (resource.data.uid == request.auth.uid || ehEquipe());
+
+      // aluno avisa que pagou; o saldo NÃO muda aqui
+      allow create: if logado()
+        && request.resource.data.keys().hasOnly(['uid', 'nome', 'email', 'valorCentavos',
+                                                 'status', 'criadoEm', 'atualizadoEm'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.nome is string && request.resource.data.nome.size() <= 80
+        && request.resource.data.valorCentavos is int
+        && request.resource.data.valorCentavos >= 100
+        && request.resource.data.valorCentavos <= 50000
+        && request.resource.data.status == 'aguardando_conferencia'
+        && request.resource.data.criadoEm == request.time
+        && request.resource.data.atualizadoEm == request.time;
+
+      // equipe confere no app do banco: conferida (credita o saldo no mesmo lote) ou recusada
+      allow update: if ehEquipe()
+        && resource.data.status == 'aguardando_conferencia'
+        && soMuda(['status', 'atualizadoEm', 'atualizadoPor'])
+        && request.resource.data.atualizadoEm == request.time
+        && request.resource.data.atualizadoPor == request.auth.uid
+        && (request.resource.data.status == 'recusada'
+            || (request.resource.data.status == 'conferida'
+                && getAfter(caminho('usuarios', resource.data.uid)).data.get('ultimaRecarga', '') == id
+                && getAfter(caminho('usuarios', resource.data.uid)).data.saldoCentavos
+                   == get(caminho('usuarios', resource.data.uid)).data.get('saldoCentavos', 0)
+                      + resource.data.valorCentavos));
 
       allow delete: if false;
     }

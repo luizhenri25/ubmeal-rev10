@@ -50,11 +50,12 @@ function iniciarFirebase() {
 /* apaga os dados de conta guardados neste aparelho */
 function zerarDadosLocais() {
   pararDeOuvirPedido();
+  pararDeOuvirConta();
   estado.nome = ''; estado.email = '';
   estado.foto = ''; estado.fotoGoogle = ''; estado.fotoEm = 0;
   estado.tipo = null; estado.telefone = ''; estado.filho = '';
   estado.carrinho = []; estado.pedido = null; estado.pago = false; estado.pedidoPronto = false;
-  estado.historico = []; estado.saldo = SALDO_INICIAL;
+  estado.historico = []; estado.saldo = SALDO_INICIAL; estado.recargasPendentes = [];
   estado.senhaPag = null; estado.senhaEm = 0; estado.cartoes = [];
   estado.notif = { promo: false, pronto: false };
 }
@@ -68,6 +69,7 @@ function aoMudarLogin(user) {
   if (!user) {
     nuvemOk = false;
     pararDeOuvirPedido();
+    pararDeOuvirConta();
     if (estado.tela !== 'login') irPara('login');
     return;
   }
@@ -89,6 +91,7 @@ function aoMudarLogin(user) {
     renderTipos();
     renderBarraCarrinho();
     irPara(estado.tipo ? 'home' : 'perfil');
+    if (leu) ouvirConta();                              // saldo e recargas em tempo real
     return carregarPedidoAtivo();
   }).then(() => {
     renderIndicadorPedido();
@@ -112,7 +115,8 @@ function carregarNuvem() {
       if (d.filho) estado.filho = d.filho;
       if (d.foto) estado.foto = d.foto;
       if (typeof d.fotoEm === 'number') estado.fotoEm = d.fotoEm;
-      /* saldo em centavos; o campo antigo "saldo" (em reais) não é mais lido */
+      /* saldo em centavos. O campo antigo "saldo" (em reais, que o próprio aluno
+         conseguia alterar) não é mais lido: ver "Estrutura do banco" no manual */
       estado.saldo = Number.isInteger(d.saldoCentavos) ? d.saldoCentavos : 0;
       if (typeof d.senhaPag === 'string') estado.senhaPag = d.senhaPag;
       if (typeof d.senhaEm === 'number') estado.senhaEm = d.senhaEm;
@@ -126,14 +130,17 @@ function carregarNuvem() {
     .catch(e => { console.error('Não deu para ler a nuvem:', e); return false; });
 }
 
-/* grava no Firestore com uma pausa, para não escrever a cada clique */
+/* grava no Firestore com uma pausa, para não escrever a cada clique.
+   O saldo NÃO vai aqui: ele só muda no mesmo lote que cria um pedido pago
+   com saldo (criarPedidoNuvem) ou quando a cantina confere uma recarga.
+   As regras recusam qualquer outra gravação do saldo. */
 let nuvemTimer;
 function salvarNuvem() {
   if (!fbPronto || !estado.uid || !nuvemOk) return;
   clearTimeout(nuvemTimer);
   nuvemTimer = setTimeout(() => {
     const apagar = firebase.firestore.FieldValue.delete();
-    fbDb.collection('usuarios').doc(estado.uid).set({
+    const dados = {
       nome: estado.nome,
       email: estado.email,
       tipo: estado.tipo,
@@ -141,7 +148,6 @@ function salvarNuvem() {
       filho: estado.filho,
       foto: estado.foto,
       fotoEm: estado.fotoEm,
-      saldoCentavos: estado.saldo,
       senhaPag: estado.senhaPag,
       senhaEm: estado.senhaEm,
       cartoes: estado.cartoes,
@@ -153,9 +159,52 @@ function salvarNuvem() {
       pago: apagar,
       pedidoPronto: apagar,
       atualizadoEm: firebase.firestore.FieldValue.serverTimestamp()
-    }, { merge: true })
+    };
+    fbDb.collection('usuarios').doc(estado.uid).set(dados, { merge: true })
       .catch(e => console.error('Não deu para gravar na nuvem:', e));
   }, 700);
+}
+
+/* --- saldo e recargas em tempo real ---
+   O saldo só sobe quando a cantina confere uma recarga (conferirRecarga),
+   então a tela escuta o documento da conta e as recargas em conferência. */
+let pararConta = null;
+let pararRecargas = null;
+function pararDeOuvirConta() {
+  if (pararConta) { pararConta(); pararConta = null; }
+  if (pararRecargas) { pararRecargas(); pararRecargas = null; }
+}
+function ouvirConta() {
+  pararDeOuvirConta();
+  if (!fbPronto || !estado.uid) return;
+  pararConta = fbDb.collection('usuarios').doc(estado.uid).onSnapshot(
+    snap => {
+      if (!snap.exists) return;
+      const s = snap.data().saldoCentavos;
+      const novo = Number.isInteger(s) ? s : 0;
+      if (novo === estado.saldo) return;
+      const subiu = novo > estado.saldo;
+      estado.saldo = novo;
+      salvarLocal();
+      if (subiu) aviso('A cantina conferiu sua recarga · saldo ' + brl(novo));
+      atualizarTelasDoSaldo();
+    },
+    e => console.error('Parou de ouvir a conta:', e)
+  );
+  pararRecargas = fbDb.collection('recargas')
+    .where('uid', '==', estado.uid)
+    .where('status', '==', RECARGA.EM_CONFERENCIA)
+    .onSnapshot(
+      q => {
+        estado.recargasPendentes = q.docs.map(d => ({ id: d.id, valor: d.data().valorCentavos || 0 }));
+        atualizarTelasDoSaldo();
+      },
+      e => console.error('Parou de ouvir as recargas:', e)
+    );
+}
+function atualizarTelasDoSaldo() {
+  if (estado.tela === 'conta') renderConta();
+  if (estado.tela === 'checkout') renderCheckout();
 }
 
 /* ---------------------------------------------------------
@@ -178,6 +227,13 @@ const STATUS = {
 const STATUS_FINAIS = [STATUS.RETIRADO, STATUS.CANCELADO, STATUS.NAO_RETIRADO];
 const STATUS_SEM_CODIGO = [STATUS.AGUARDANDO_PIX, STATUS.EM_CONFERENCIA];  // código de retirada ainda escondido
 const PIX_MINUTOS = 10;
+
+/* status de uma recarga de saldo (coleção recargas) */
+const RECARGA = {
+  EM_CONFERENCIA: 'aguardando_conferencia',  // aluno disse que pagou; o saldo ainda não mudou
+  CONFERIDA:      'conferida',               // caixa achou o Pix no banco; saldo creditado
+  RECUSADA:       'recusada'                 // o Pix não chegou
+};
 
 const ts = () => firebase.firestore.FieldValue.serverTimestamp();
 
@@ -404,6 +460,27 @@ function mudarStatusPedido(id, novoStatus) {
   });
 }
 
+/* também para o painel: o caixa achou (ou não) o Pix da recarga no app do banco.
+   Conferida: a recarga muda de status e o saldo do aluno sobe, no MESMO lote;
+   as regras só aceitam os dois juntos e com o valor exato da recarga. */
+async function conferirRecarga(id, conferida) {
+  const ref = fbDb.collection('recargas').doc(id);
+  const r = (await ref.get()).data();
+  const lote = fbDb.batch();
+  lote.update(ref, {
+    status: conferida ? RECARGA.CONFERIDA : RECARGA.RECUSADA,
+    atualizadoEm: ts(),
+    atualizadoPor: fbAuth.currentUser.uid
+  });
+  if (conferida) {
+    lote.update(fbDb.collection('usuarios').doc(r.uid), {
+      saldoCentavos: firebase.firestore.FieldValue.increment(r.valorCentavos),
+      ultimaRecarga: id
+    });
+  }
+  return lote.commit();
+}
+
 /* --- login: mensagens de erro em português --- */
 function tratarErroLogin(err) {
   entrando = false;
@@ -492,7 +569,7 @@ const PAGAMENTOS = [
   { id: 'saldo',  nome: 'Saldo UBMeal',                 desc: 'Carteira pré-paga da instituição.', tag: '' }
 ];
 
-/* conta nova começa zerada: só entra saldo por recarga */
+/* conta nova começa zerada: só entra saldo por recarga conferida pela cantina */
 const SALDO_INICIAL = 0;
 const DIAS_FOTO = 60;      // intervalo mínimo entre trocas de foto
 const DIAS_SENHA = 90;     // validade da senha das formas de pagamento
@@ -534,6 +611,7 @@ const estado = {
   historico: [],
   abaPedidos: 'atual',
   saldo: SALDO_INICIAL,  // em centavos
+  recargasPendentes: [], // recargas que a cantina ainda vai conferir
   senhaPag: null,
   senhaEm: 0,            // quando a senha foi criada
   cartoes: [],
@@ -1208,13 +1286,15 @@ function renderCheckout() {
   }).join('');
 
   const ls = linhas();
+  const pendente = estado.recargasPendentes.reduce((a, r) => a + r.valor, 0);
   $('#resumo').innerHTML = `
     <strong style="display:block;margin-bottom:12px">Resumo</strong>
     ${ls.map(l => `<div class="linha"><span class="muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${l.qty}× ${esc(l.p.nome)}${l.obs ? ' · ' + esc(l.obs) : ''}</span><strong>${brl(l.total)}</strong></div>`).join('')}
     <div class="divisor"></div>
     <div class="total"><strong>Total</strong><span class="preco preco--xg">${brl(tot)}</span></div>
     ${estado.pagamento === 'saldo'
-      ? `<div class="linha" style="margin-top:12px"><span class="muted">Saldo depois do pedido</span><strong>${brl(Math.max(0, estado.saldo - tot))}</strong></div>`
+      ? `<div class="linha" style="margin-top:12px"><span class="muted">Saldo depois do pedido</span><strong>${brl(Math.max(0, estado.saldo - tot))}</strong></div>
+         ${pendente ? `<p class="muted" style="margin-top:4px">${brl(pendente)} de recarga ainda em conferência pela cantina.</p>` : ''}`
       : ''}
     <p class="muted" style="margin-top:8px">${esc(textoRetirada())}</p>`;
 
@@ -1566,6 +1646,12 @@ function renderConta() {
   $('#contaNome').textContent = nomeExibido();
   $('#contaTipo').textContent = nomeTipo();
   $('#contaSaldo').textContent = brl(estado.saldo);
+  const pendente = estado.recargasPendentes.reduce((a, r) => a + r.valor, 0);
+  const elRec = $('#contaRecarga');
+  if (elRec) {
+    elRec.hidden = !pendente;
+    elRec.textContent = pendente ? '+ ' + brl(pendente) + ' em conferência pela cantina' : '';
+  }
 
   const seta = '<svg class="ico" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg>';
   const itens = [
@@ -1737,7 +1823,7 @@ function renderModal() {
     if (estado.recarga.etapa === 'valor') {
       tit.textContent = 'Recarregar saldo';
       body.innerHTML = `
-        <p class="lead" style="margin-bottom:14px">A recarga é feita <strong>somente por Pix</strong>. O saldo entra assim que o pagamento for confirmado.</p>
+        <p class="lead" style="margin-bottom:14px">A recarga é feita <strong>somente por Pix</strong>. O saldo entra depois que a cantina conferir o Pix no app do banco.</p>
         <div class="valores">
           ${[1000, 2000, 5000].map(v => `<button class="chip" data-act="recarga-valor" data-val="${v}">${brl(v)}</button>`).join('')}
         </div>
@@ -1757,8 +1843,8 @@ function renderModal() {
           <svg class="ico" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 5H6a1 1 0 0 0-1 1v9"/></svg>
           Copiar código Pix
         </button>
-        <button class="btn btn--dashed btn--block" style="margin-top:9px" data-act="recarga-paguei">Já fiz o pagamento</button>
-        <p class="pix__nota">Recarga de <strong>${brl(estado.recarga.valor)}</strong> · chave ${PIX_RECARGA.chave} · ${esc(PIX_RECARGA.nome)}.</p>`;
+        <button class="btn btn--dashed btn--block" style="margin-top:9px" data-act="recarga-paguei" ${estado.recarga.enviando ? 'disabled' : ''}>${estado.recarga.enviando ? 'Avisando a cantina…' : 'Já fiz o pagamento'}</button>
+        <p class="pix__nota">Recarga de <strong>${brl(estado.recarga.valor)}</strong> · chave ${PIX_RECARGA.chave} · ${esc(PIX_RECARGA.nome)}. O saldo entra quando a cantina conferir o Pix.</p>`;
       desenharQR($('#qrRecarga'), estado.recarga.payload);
     }
     return;
@@ -1840,6 +1926,42 @@ function salvarCartao() {
   salvar();
   aviso('Cartão salvo');
   abrirModal('cartoes');
+}
+
+/* "Já fiz o pagamento" da recarga: cria o pedido de conferência em recargas/{id}.
+   O saldo NÃO sobe aqui (item 23): só quando o caixa achar o Pix no app do
+   banco e chamar conferirRecarga(). A tela atualiza sozinha (ouvirConta). */
+async function avisarRecarga() {
+  const v = estado.recarga.valor;
+  if (!fbPronto || !estado.uid) {               // modo demonstração: não tem caixa, credita direto
+    estado.saldo += v;
+    salvar(); fecharModal(); renderConta();
+    aviso('Saldo atualizado · ' + brl(estado.saldo));
+    return;
+  }
+  if (estado.recarga.enviando) return;
+  estado.recarga.enviando = true;
+  renderModal();
+  try {
+    await fbDb.collection('recargas').add({
+      uid: estado.uid,
+      nome: nomeExibido(),
+      email: estado.email,
+      valorCentavos: v,
+      status: RECARGA.EM_CONFERENCIA,
+      criadoEm: ts(),
+      atualizadoEm: ts()
+    });
+    fecharModal(); renderConta();
+    aviso('Avisamos a cantina · o saldo entra depois da conferência');
+  } catch (e) {
+    console.error('Recarga não foi registrada:', e);
+    estado.recarga.enviando = false;
+    renderModal();
+    aviso('Não deu para avisar a cantina. Tente de novo.');
+  } finally {
+    estado.recarga.enviando = false;
+  }
 }
 
 /* ---------------------------------------------------------
@@ -2064,11 +2186,7 @@ document.addEventListener('click', (ev) => {
       copiar(estado.recarga.payload, 'Código Pix copiado');
       break;
 
-    case 'recarga-paguei':
-      estado.saldo += estado.recarga.valor;           // centavos
-      salvar(); fecharModal(); renderConta();
-      aviso('Saldo atualizado · ' + brl(estado.saldo));
-      break;
+    case 'recarga-paguei': avisarRecarga(); break;
 
     /* ----- sair ----- */
     case 'pedir-sair': abrirModal('sair'); break;

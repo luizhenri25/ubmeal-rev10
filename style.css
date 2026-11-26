@@ -525,6 +525,7 @@ select.input { appearance: none; -webkit-appearance: none; }
 .saldo__info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 .saldo .mono-label { margin: 0; }
 .saldo strong { display: block; font-family: var(--display); font-weight: 800; font-size: 28px; line-height: 1; }
+.saldo__pendente { font-family: var(--mono); font-size: 11.5px; opacity: .85; }
 .rows { border: 2px solid var(--linha); border-radius: 20px; background: var(--branco); overflow: hidden; }
 .row {
   width: 100%; display: flex; align-items: center; gap: 12px; padding: 16px;
