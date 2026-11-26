@@ -8,6 +8,9 @@ rules_version = '2';
 // Quem é da cantina: crie um documento em equipe/{uid} (o uid
 // aparece em Authentication › Usuários) com o campo
 // papel: "caixa", "preparo" ou "dono". Só dá para criar pelo console.
+//
+// Todo valor em dinheiro é um número inteiro em centavos
+// (1250 = R$ 12,50), para a soma nunca dar 0,30000000000000004.
 // =========================================================
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -51,8 +54,8 @@ service cloud.firestore {
       allow create: if logado()
         && request.resource.data.uid == request.auth.uid
         && request.resource.data.ativo == true
-        && request.resource.data.total is number
-        && request.resource.data.total > 0
+        && request.resource.data.totalCentavos is int
+        && request.resource.data.totalCentavos > 0
         && request.resource.data.itens is list
         && request.resource.data.itens.size() > 0
         && request.resource.data.codigo is string
