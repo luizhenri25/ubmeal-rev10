@@ -3,7 +3,8 @@ rules_version = '2';
 // =========================================================
 // UBMeal — regras do Cloud Firestore
 // Cole este arquivo em: Console do Firebase › Firestore Database
-// › Regras › Publicar.
+// › Regras › Publicar. Antes de publicar, rode os testes:
+// npm test (ver a seção Testes do README).
 //
 // Quem é da cantina: crie um documento em equipe/{uid} (o uid
 // aparece em Authentication › Usuários) com o campo
