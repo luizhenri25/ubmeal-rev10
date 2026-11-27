@@ -4,7 +4,7 @@ Sistema web em que alunos, funcionários e responsáveis da UBM pedem e pagam o 
 
 ## Sobre o projeto
 
-No intervalo, a fila da cantina consome boa parte do tempo livre de quem estuda e trabalha na UBM, e a cantina só descobre o que vai preparar quando o cliente chega ao balcão. Com o UBMeal, a pessoa vê o cardápio, monta o pedido, escolhe um horário de retirada ou entra na fila e paga por Pix, saldo pré-pago ou no balcão. A cantina recebe o pedido antes e o entrega pelo código de retirada (UB-XXXX). O sistema atende quatro perfis: aluno da faculdade, aluno do ensino fundamental ou médio, funcionário e pai, mãe ou responsável.
+No intervalo, a fila da cantina consome boa parte do tempo livre de quem estuda e trabalha na UBM, e a cantina só descobre o que vai preparar quando o cliente chega ao balcão. Com o UBMeal, a pessoa vê o cardápio, monta o pedido, escolhe um horário de retirada ou entra na fila e paga por Pix, saldo pré-pago ou no balcão. A cantina recebe o pedido antes e o entrega pelo código de retirada (UB-XXXX). O saldo pré-pago só sobe depois que a cantina confere a recarga no app do banco. O sistema atende quatro perfis: aluno da faculdade, aluno do ensino fundamental ou médio, funcionário e pai, mãe ou responsável.
 
 Parceiro extensionista: cantina Universidade do Lanche, no campus da UBM (Centro Universitário de Barra Mansa), em Barra Mansa (RJ).
 
@@ -15,14 +15,18 @@ Parceiro extensionista: cantina Universidade do Lanche, no campus da UBM (Centro
 | HTML5, CSS3 e JavaScript puro (ES2017, sem framework) | padrão dos navegadores atuais | telas, estilos e toda a lógica do app, em uma página só (SPA) |
 | Firebase JavaScript SDK (versão compat, via CDN) | 10.12.2 | conexão do app com os serviços do Firebase |
 | Firebase Authentication (provedor Google) | 10.12.2 | login com a conta Google |
-| Cloud Firestore | 10.12.2 (SDK) | banco de dados NoSQL em tempo real: contas, pedidos e equipe da cantina |
-| Regras de segurança do Firestore | rules_version 2 | quem pode ler e alterar cada dado (arquivo `firestore.rules`) |
+| Cloud Firestore | 10.12.2 (SDK) | banco de dados NoSQL em tempo real: contas, pedidos, códigos, recargas e equipe da cantina |
+| Regras de segurança do Firestore | rules_version 2 | quem pode ler e alterar cada dado; também conferem preços, total, débito do saldo e ordem do status (arquivo `firestore.rules`) |
+| Web Crypto API (PBKDF2 com SHA-256) | padrão dos navegadores atuais | guarda só o hash da senha de pagamento de 6 dígitos |
 | qrcode (node-qrcode, via CDN) | 1.5.3 | QR Code do Pix |
 | Google Fonts: Bricolage Grotesque, Archivo e Space Mono | — | tipografia da interface |
 | Netlify | serviço de hospedagem | publicação do site |
 | Node.js + pacote serve | Node 20 ou mais novo · serve 14.2.7 | servidor local para rodar o projeto no computador (só no desenvolvimento) |
+| Firebase CLI (firebase-tools) + emulador do Firestore | 13.35.1 | roda os testes das regras no computador, sem tocar no banco de verdade (só no desenvolvimento) |
+| @firebase/rules-unit-testing + Firebase JS SDK | 5.0.2 · 12.19.0 | biblioteca dos testes automatizados das regras (pasta `tests/`) |
+| Java (JDK) | 11 ou mais novo | exigido pelo emulador do Firestore (só para rodar os testes) |
 
-O projeto não tem etapa de build: o navegador lê `index.html`, `style.css` e `script.js` direto, e as bibliotecas vêm da internet (CDN).
+O projeto não tem etapa de build: o navegador lê `index.html`, `style.css` e `script.js` direto, e as bibliotecas vêm da internet (CDN). As ferramentas de teste ficam no `package.json` e só são instaladas por quem for rodar os testes.
 
 ## Pré-requisitos
 
@@ -32,6 +36,8 @@ O projeto não tem etapa de build: o navegador lê `index.html`, `style.css` e `
   - Para conferir: `node --version` (deve mostrar v20 ou maior)
 - Google Chrome, Edge ou Safari atualizado, com acesso à internet (o Firebase e as bibliotecas vêm da internet)
 - Uma conta Google para fazer login no app
+- Só para rodar os testes automatizados: Java 11 ou mais novo — https://adoptium.net/pt-BR
+  - Para conferir: `java -version`
 
 ## Instalação
 
@@ -42,9 +48,15 @@ O projeto não tem etapa de build: o navegador lê `index.html`, `style.css` e `
    cd ubmeal-rev10
    ```
 
-2. Instale as dependências: não há. O projeto não usa `npm install`; o Firebase e o gerador de QR Code são carregados pelo próprio `index.html`.
+2. Instale as dependências:
+   - para **usar o app**, não há nenhuma: o Firebase e o gerador de QR Code são carregados pelo próprio `index.html`;
+   - para **rodar os testes das regras**, rode uma vez:
 
-3. Banco de dados: não é preciso criar tabelas. O Cloud Firestore cria as coleções `usuarios`, `pedidos` e `codigos` sozinho na primeira gravação. Só a coleção `equipe` (contas da cantina) é criada à mão, como explica a seção [Configuração](#configuração).
+     ```bash
+     npm install
+     ```
+
+3. Banco de dados: não é preciso criar tabelas. O Cloud Firestore cria as coleções `usuarios`, `pedidos`, `codigos` e `recargas` sozinho na primeira gravação. Só a coleção `equipe` (contas da cantina) é criada à mão, como explica a seção [Configuração](#configuração).
 
 ## Configuração
 
@@ -71,6 +83,8 @@ Num projeto Firebase novo, faça também, uma vez só:
 2. Em Firestore Database, crie o banco e, na aba **Regras**, cole o conteúdo do arquivo `firestore.rules` e clique em **Publicar**.
 3. Em Authentication › Configurações › **Domínios autorizados**, adicione o domínio onde o site será publicado (ex.: `ubmeal.netlify.app`).
 4. Para cada pessoa da cantina, crie em Firestore Database o documento `equipe/{uid}` com o campo `papel` (`"caixa"`, `"preparo"` ou `"dono"`). O `uid` aparece em Authentication › Usuários depois que a pessoa entra no app pela primeira vez.
+
+Se mudar o preço de um produto na constante `PRODUTOS` do `script.js`, mude também a função `precos()` do `firestore.rules` e publique as regras de novo: as regras conferem o preço de cada item e recusam o pedido se os dois estiverem diferentes.
 
 ## Como executar
 
@@ -105,19 +119,44 @@ Fluxo principal: fazer um pedido pago com Pix e acompanhar até a retirada.
 
    ![Meus pedidos com o pedido pronto e o código de retirada](docs/img/uso-3-pedido-pronto.png)
 
-Enquanto o painel da cantina não fica pronto, a equipe muda o status do pedido pelo Console do Firebase: Firestore Database › `pedidos` › documento do pedido › campo `status` (`em_preparo`, `pronto`, `retirado`).
+Enquanto o painel da cantina não fica pronto, a equipe faz a parte dela de um destes dois jeitos:
+
+- **Pelo app (recomendado):** entre no app com a conta que está na coleção `equipe`, abra o console do navegador (F12 › Console) e rode `mudarStatusPedido('id-do-pedido', 'em_preparo')` (depois `'pronto'` e `'retirado'`) ou, para uma recarga de saldo, `conferirRecarga('id-da-recarga', true)`. Assim as regras conferem tudo, como vai acontecer no painel.
+- **Pelo Console do Firebase:** Firestore Database › `pedidos` › documento do pedido › campo `status`, seguindo a ordem `em_preparo` → `pronto` → `retirado` e ajustando o campo `ativo` (`false` em `retirado`). O Console tem acesso de administrador e não passa pelas regras, então a ordem fica por conta de quem edita.
 
 ## Testes
 
-O projeto ainda não tem testes automatizados no repositório. A função principal é testada à mão, assim:
+### Testes automatizados das regras do Firestore
+
+As regras de segurança (`firestore.rules`) têm testes automatizados em `tests/regras.test.mjs`. Eles sobem o emulador do Firestore no seu computador, gravam dados de teste e conferem o que as regras aceitam e recusam, sem tocar no banco de verdade. Com o Java instalado e depois do `npm install`, rode:
+
+```bash
+npm test
+```
+
+Na primeira vez, o Firebase CLI baixa o emulador (algumas dezenas de MB). O resultado esperado é o Node listar os testes com `ok` e terminar com `# fail 0`. Os testes cobrem:
+
+- o aluno não consegue gravar o próprio saldo nem criar a conta já com saldo;
+- pedido com preço diferente do cardápio, com total que não bate com a soma dos itens, com cartão ou com status inicial errado é recusado;
+- pedido sem a reserva do código `UB-XXXX` no mesmo lote, ou com um código já usado no dia, é recusado;
+- pedido pago com saldo só passa se o saldo for debitado no mesmo lote, com o valor exato e sem ficar negativo;
+- a equipe só muda o status na ordem do ciclo (não pula etapas nem volta um pedido retirado) e o campo `ativo` precisa combinar com o status;
+- a recarga só credita o saldo quando a equipe marca a recarga como conferida no mesmo lote, com o valor exato e uma vez só.
+
+Rode os testes antes de publicar uma versão nova do `firestore.rules` no Console do Firebase.
+
+### Teste manual da função principal
+
+A interface ainda é testada à mão, assim:
 
 1. Rode o projeto (seção [Como executar](#como-executar)) e entre com uma conta Google.
 2. Adicione dois produtos, um deles com observação, e confira se o total do carrinho está certo.
 3. Confirme um pedido com **Pix na hora**. No Console do Firebase, confira se apareceu um documento em `pedidos` com `status: "aguardando_pix"` e um código `UB-XXXX`.
 4. Toque em **Já fiz o pagamento**. O `status` no Console deve mudar para `aguardando_conferencia`, e o código de retirada deve continuar escondido no app.
-5. Com a tela **Pedidos** aberta, mude no Console o `status` para `em_preparo` e depois para `pronto`. A tela do app deve mudar sozinha, sem recarregar, e mostrar o código.
+5. Com a tela **Pedidos** aberta, mude o `status` para `em_preparo` e depois para `pronto` (veja os dois jeitos em [Exemplo de uso](#exemplo-de-uso)). A tela do app deve mudar sozinha, sem recarregar, e mostrar o código.
 6. Mude o `status` para `retirado`. O pedido deve sair de **Pedido** e aparecer em **Histórico**.
-7. Regras de segurança: em Firestore Database › Regras › **Rules Playground**, simule um `update` em `pedidos/{id}` como o dono do pedido, mudando `status` para `pronto`. O resultado deve ser **negado**.
+7. Em **Conta › Recarregar**, gere um Pix de R$ 20,00 e toque em **Já fiz o pagamento**. O saldo deve continuar igual, com o aviso "R$ 20,00 em conferência pela cantina". Com a conta da equipe, rode `conferirRecarga('id-da-recarga', true)`: o saldo do aluno deve passar para R$ 20,00 sozinho.
+8. Faça um pedido com **Saldo UBMeal**. O app deve pedir a senha de pagamento de 6 dígitos (na primeira vez, criar a senha) e só então confirmar. No Console, o documento da conta deve mostrar `senhaPagHash`, nunca os 6 dígitos.
 
 Resultado esperado: todos os passos acontecem como descrito, sem erros no console do navegador (F12 › Console).
 
@@ -153,11 +192,13 @@ ubmeal-rev10/
 
 | Integrante | Papel no projeto | GitHub |
 |---|---|---|
-| Gabriel Vicente | [papel] | [@usuario] |
-| João Gabriel Gama | [papel] | [@usuario] |
-| Luiz Henrique Marques | [papel] | [@usuario] |
-| Noan Escobar | [papel] | [@usuario] |
-| Thiago Araújo | [papel] | [@usuario] |
+| Gabriel Vicente | Documentação | [@usuario] |
+| João Gabriel Gama | Firebase e regras de segurança | [@usuario] |
+| Luiz Henrique Marques | Front-end | [@luizhenri25](https://github.com/luizhenri25) |
+| Noan Escobar | Front-end e testes | [@NoanRodrigues](https://github.com/NoanRodrigues) |
+| Thiago Araújo | Firebase, regras de segurança e testes | [@usuario] |
+
+Todos os integrantes participaram do contato com a cantina parceira, apresentando a ideia ao dono da Universidade do Lanche.
 
 Licença: MIT (arquivo [LICENSE](LICENSE)). A cantina parceira e as próximas turmas podem usar, modificar e continuar o sistema, mantendo o crédito da equipe.
 
