@@ -582,13 +582,13 @@ const PAGAMENTOS = [
   { id: 'pix',    nome: 'Pix na hora',                  desc: 'QR code aparece após confirmar.',   tag: 'instantâneo' },
   { id: 'cartao', nome: 'Cartão de crédito ou débito',  desc: 'Ainda não disponível no app. Para pagar com cartão, escolha Pagar na retirada e use a maquininha.', tag: 'em breve', off: true },
   { id: 'balcao', nome: 'Pagar na retirada',            desc: 'Dinheiro ou cartão na maquininha do balcão.', tag: 'no local' },
-  { id: 'saldo',  nome: 'Saldo UBMeal',                 desc: 'Carteira pré-paga da instituição.', tag: '' }
+  { id: 'saldo',  nome: 'Saldo UBMeal',                 desc: 'Carteira pré-paga · pede a sua senha de 6 dígitos.', tag: '' }
 ];
 
 /* conta nova começa zerada: só entra saldo por recarga conferida pela cantina */
 const SALDO_INICIAL = 0;
 const DIAS_FOTO = 60;      // intervalo mínimo entre trocas de foto
-const DIAS_SENHA = 90;     // validade da senha das formas de pagamento
+const DIAS_SENHA = 90;     // validade da senha de pagamento
 const MAX_QTD = 20;        // limite de unidades do mesmo item no carrinho
 const MAX_OBS = 140;       // tamanho máximo da observação de um item
 const MAX_LINHAS = 10;     // itens diferentes por pedido (o firestore.rules confere até 10)
@@ -634,6 +634,7 @@ const estado = {
   senhaSal: null,        // "sal" aleatório usado no hash
   senhaPag: null,        // só para contas antigas: senha em texto puro, trocada pelo hash no próximo uso
   senhaEm: 0,            // quando a senha foi criada
+  senhaDepois: null,     // o que fazer depois da senha certa: 'pedido' ou 'cartoes'
   cartoes: [],
   notif: { promo: false, pronto: false },
   removerIdx: null,      // posição da linha do carrinho que vai ser removida
@@ -1380,7 +1381,9 @@ function temPedidoAtivo() {
   return !!(estado.pedido && !STATUS_FINAIS.includes(estado.pedido.status));
 }
 
-async function confirmarPedido() {
+/* senhaOk = true quando a pessoa acabou de digitar a senha de pagamento certa
+   (pagamento com saldo; ver passoSenha) */
+async function confirmarPedido(senhaOk) {
   if (estado.enviando) return;                      // clique duplo não cria dois pedidos
   limparCarrinho();
   if (!estado.carrinho.length) { aviso('Seu carrinho está vazio'); renderCarrinho(); return; }
@@ -1406,6 +1409,11 @@ async function confirmarPedido() {
   }
   if (estado.pagamento === 'saldo' && estado.saldo < total) {
     aviso('Saldo insuficiente · faltam ' + brl(total - estado.saldo));
+    return;
+  }
+  /* saldo: pede a senha de 6 dígitos antes de gravar (item 16 do backlog) */
+  if (estado.pagamento === 'saldo' && !senhaOk) {
+    pedirSenha('pedido');
     return;
   }
 
@@ -1727,7 +1735,7 @@ function renderConta() {
   const itens = [
     { act: 'conta-dados',      txt: 'Dados pessoais' },
     { act: 'conta-tipo',       txt: 'Tipo de usuário: ' + nomeTipo() },
-    { act: 'conta-pagamentos', txt: 'Formas de pagamento' },
+    { act: 'conta-pagamentos', txt: 'Senha de pagamento e cartões' },
     { act: 'conta-notif',      txt: 'Notificações' }
   ];
   $('#contaItens').innerHTML =
@@ -1747,6 +1755,7 @@ function fecharModal() {
   estado.modal = null;
   estado.pin = '';
   estado.pinTmp = '';
+  estado.senhaDepois = null;
   $('#modal').hidden = true;
 }
 
@@ -1807,8 +1816,13 @@ function renderModal() {
 
   /* ---- senha de 6 dígitos ---- */
   if (estado.modal === 'senha') {
-    const textos = {
-      criar:     ['Crie uma senha', 'Seis números para proteger seus cartões.'],
+    const pagando = estado.senhaDepois === 'pedido';
+    const textos = pagando ? {
+      criar:     ['Crie sua senha de pagamento', 'Seis números que vão ser pedidos sempre que você pagar com o saldo.'],
+      confirmar: ['Repita a senha', 'Digite os mesmos seis números.'],
+      entrar:    ['Digite sua senha', 'Seis números para pagar ' + brl(subtotal()) + ' com o saldo UBMeal.']
+    } : {
+      criar:     ['Crie uma senha', 'Seis números para confirmar pagamentos com saldo e abrir seus cartões.'],
       confirmar: ['Repita a senha', 'Digite os mesmos seis números.'],
       entrar:    ['Digite sua senha', 'Seis números para abrir suas formas de pagamento.']
     };
@@ -1816,14 +1830,14 @@ function renderModal() {
     const vencida = estado.senhaEtapa === 'criar' && senhaVencida();
     tit.textContent = t[0];
     body.innerHTML = `
-      <p class="lead" style="margin-bottom:6px">${t[1]}</p>
+      <p class="lead" style="margin-bottom:6px">${esc(t[1])}</p>
       <div class="pin" id="pin">
         ${[0,1,2,3,4,5].map(i => `<i class="pin__box ${i < estado.pin.length ? 'is-fill' : ''}"></i>`).join('')}
         <input class="pin__input" id="inPin" type="tel" inputmode="numeric" maxlength="6" autocomplete="one-time-code" value="${estado.pin}" />
       </div>
       <p class="pix__nota">${vencida
         ? 'Por segurança, a senha é trocada a cada ' + DIAS_SENHA + ' dias. A anterior venceu.'
-        : 'Esta senha protege só a tela de cartões. Não use a mesma senha do seu banco.'}</p>`;
+        : 'A senha confirma os pagamentos com saldo e protege a tela de cartões. Não use a mesma senha do seu banco.'}</p>`;
     setTimeout(() => { const el = $('#inPin'); if (el) el.focus(); }, 80);
     return;
   }
@@ -1846,7 +1860,7 @@ function renderModal() {
         : '<div class="vazio"><strong>Nenhum cartão salvo</strong>Adicione um cartão para pagar mais rápido.</div>'}
       <button class="btn btn--dashed btn--block mt-md" data-act="add-cartao">+ Adicionar cartão</button>
       <button class="btn btn--outline btn--block" style="margin-top:10px" data-act="trocar-senha">Trocar senha agora</button>
-      <p class="pix__nota nota--esq">A senha vale ${DIAS_SENHA} dias${estado.senhaEm ? ' · próxima troca em ' + proximaSenha() : ''}.</p>
+      <p class="pix__nota nota--esq">A senha de pagamento vale ${DIAS_SENHA} dias${estado.senhaEm ? ' · próxima troca em ' + proximaSenha() : ''} e é pedida em todo pagamento com saldo.</p>
       <p class="pix__nota nota--esq">O pagamento com cartão pelo app ainda não está disponível. Para pagar com cartão, escolha <strong>Pagar na retirada</strong> e use a maquininha do balcão.</p>`;
     return;
   }
@@ -1938,6 +1952,29 @@ function renderPinDots() {
   $$('#pin .pin__box').forEach((b, i) => b.classList.toggle('is-fill', i < n));
 }
 
+/* abre a senha de 6 dígitos; depois da senha certa vai para "destino":
+   'pedido' (pagar com saldo) ou 'cartoes' (tela de cartões) */
+function pedirSenha(destino) {
+  estado.pin = ''; estado.pinTmp = '';
+  estado.senhaDepois = destino;
+  if (!temSenha()) {
+    estado.senhaEtapa = 'criar';
+  } else if (senhaVencida()) {
+    estado.senhaEtapa = 'criar';
+    aviso('Sua senha passou de ' + DIAS_SENHA + ' dias. Crie uma nova.');
+  } else {
+    estado.senhaEtapa = 'entrar';
+  }
+  abrirModal('senha');
+}
+
+function senhaLiberada() {
+  const destino = estado.senhaDepois;
+  estado.senhaDepois = null;
+  if (destino === 'pedido') { fecharModal(); confirmarPedido(true); }
+  else abrirModal('cartoes');
+}
+
 let conferindoSenha = false;
 async function passoSenha() {
   if (conferindoSenha) return;
@@ -1964,12 +2001,12 @@ async function passoSenha() {
       estado.pin = '';
       estado.pinTmp = '';
       aviso('Senha criada · vale por ' + DIAS_SENHA + ' dias');
-      abrirModal('cartoes');
+      senhaLiberada();
       return;
     }
     const certa = await conferirSenha(pin);
     estado.pin = '';
-    if (certa) abrirModal('cartoes');
+    if (certa) senhaLiberada();
     else { renderModal(); aviso('Senha incorreta'); }
   } catch (e) {
     console.error('Senha:', e);
@@ -2137,7 +2174,7 @@ document.addEventListener('click', (ev) => {
       estado.pagamento = val; renderCheckout(); break;
     }
 
-    case 'confirmar':  confirmarPedido(); break;
+    case 'confirmar':  confirmarPedido(false); break;
     case 'copiar-pix': copiarPix(); break;
     case 'ja-paguei':  declararPix(); break;
 
@@ -2195,20 +2232,11 @@ document.addEventListener('click', (ev) => {
       break;
 
     case 'conta-pagamentos':
-      estado.pin = ''; estado.pinTmp = '';
-      if (!temSenha()) {
-        estado.senhaEtapa = 'criar';
-      } else if (senhaVencida()) {
-        estado.senhaEtapa = 'criar';
-        aviso('Sua senha passou de ' + DIAS_SENHA + ' dias. Crie uma nova.');
-      } else {
-        estado.senhaEtapa = 'entrar';
-      }
-      abrirModal('senha');
+      pedirSenha('cartoes');
       break;
 
     case 'trocar-senha':
-      estado.pin = ''; estado.pinTmp = ''; estado.senhaEtapa = 'criar';
+      estado.pin = ''; estado.pinTmp = ''; estado.senhaEtapa = 'criar'; estado.senhaDepois = 'cartoes';
       abrirModal('senha');
       break;
 
