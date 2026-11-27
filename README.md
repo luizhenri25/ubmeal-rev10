@@ -38,8 +38,8 @@ O projeto não tem etapa de build: o navegador lê `index.html`, `style.css` e `
 1. Clone o repositório e entre na pasta:
 
    ```bash
-   git clone https://github.com/[usuario-ou-organizacao]/ubmeal.git
-   cd ubmeal
+   git clone https://github.com/luizhenri25/ubmeal-rev10.git
+   cd ubmeal-rev10
    ```
 
 2. Instale as dependências: não há. O projeto não usa `npm install`; o Firebase e o gerador de QR Code são carregados pelo próprio `index.html`.
@@ -124,15 +124,21 @@ Resultado esperado: todos os passos acontecem como descrito, sem erros no consol
 ## Estrutura do projeto
 
 ```
-ubmeal/
-├── img/               # logos do UBMeal e da cantina Universidade do Lanche
-├── docs/              # documentação (manual técnico parcial)
-│   └── img/           # prints e diagramas usados na documentação
-├── index.html         # estrutura de todas as telas (página única)
-├── style.css          # estilos, pensados primeiro para o celular
-├── script.js          # lógica: login, carrinho, pedidos e Pix
-├── firestore.rules    # regras de segurança do Cloud Firestore
-├── LICENSE            # licença MIT
+ubmeal-rev10/
+├── img/                  # logos do UBMeal e da cantina Universidade do Lanche
+├── docs/                 # documentação (manual técnico parcial)
+│   └── img/              # prints e diagramas usados na documentação
+├── tests/
+│   └── regras.test.mjs   # testes automatizados do firestore.rules (npm test)
+├── index.html            # estrutura de todas as telas (página única)
+├── style.css             # estilos, pensados primeiro para o celular
+├── script.js             # lógica: login, carrinho, pedidos, Pix, saldo e recargas
+├── firestore.rules       # regras de segurança do Cloud Firestore
+├── firebase.json         # configuração do emulador usado nos testes
+├── package.json          # ferramentas de teste (só para desenvolvimento)
+├── package-lock.json     # versões exatas das ferramentas de teste
+├── .gitignore            # deixa node_modules e logs fora do repositório
+├── LICENSE               # licença MIT
 └── README.md
 ```
 
