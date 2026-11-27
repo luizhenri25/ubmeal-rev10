@@ -592,6 +592,7 @@ const DIAS_SENHA = 90;     // validade da senha de pagamento
 const MAX_QTD = 20;        // limite de unidades do mesmo item no carrinho
 const MAX_OBS = 140;       // tamanho máximo da observação de um item
 const MAX_LINHAS = 10;     // itens diferentes por pedido (o firestore.rules confere até 10)
+const ANTECEDENCIA_MIN = 15;     // um horário de retirada fecha 15 min antes (ex.: 9h40 aceita até 9h25)
 const RECARGA_MIN = 100;         // R$ 1,00 (centavos)
 const RECARGA_MAX = 50000;       // R$ 500,00 (centavos)
 const PBKDF2_VOLTAS = 100000;    // custo do hash da senha de pagamento
@@ -754,6 +755,14 @@ function normalizarHistorico(lista) {
     tint: h.tint || '#F0E4C6'
   }));
 }
+
+/* ----- horários de retirada ----- */
+function minutosDoSlot(s) { const p = s.id.split(':'); return Number(p[0]) * 60 + Number(p[1]); }
+function minutosAgora() { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); }
+function horaDe(min) { return Math.floor(min / 60) + 'h' + String(min % 60).padStart(2, '0'); }
+/* o horário aceita pedido até 15 min antes (RN24 / item 25 do backlog) */
+function slotAberto(s) { return minutosAgora() <= minutosDoSlot(s) - ANTECEDENCIA_MIN; }
+function slotsAbertos() { return SLOTS.filter(slotAberto); }
 
 /* ----- senha de pagamento: só o hash vai para a nuvem (item 24) ----- */
 const paraHex = (bytes) => Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
@@ -1000,7 +1009,7 @@ function irPara(tela) {
   $$('.tab').forEach(b => b.classList.toggle('is-on', b.dataset.go === tela));
   $$('.navlink').forEach(b => b.classList.toggle('is-on', b.dataset.go === tela));
 
-  if (tela === 'home')     { renderCategorias(); renderMenu(); }
+  if (tela === 'home')     { renderCategorias(); renderMenu(); renderFaixa(); }
   if (tela === 'cantina')  { renderCategorias(); renderMenu(); }
   if (tela === 'produto')  renderProduto();
   if (tela === 'busca')    { renderBusca(); setTimeout(() => $('#inBusca').focus(), 60); }
@@ -1013,6 +1022,24 @@ function irPara(tela) {
   renderBarraCarrinho();
   renderIndicadorPedido();
   window.scrollTo(0, 0);
+}
+
+/* faixa do início: próximo horário que ainda aceita pedido (antes era um texto fixo) */
+function renderFaixa() {
+  const txt = $('#faixaTxt');
+  const min = $('#faixaMin');
+  if (!txt || !min) return;
+  const prox = slotsAbertos()[0];
+  if (!prox) {
+    txt.innerHTML = 'Os horários de retirada de hoje já fecharam. No pagamento, escolha <strong>Entrar na fila</strong>.';
+    min.hidden = true;
+    return;
+  }
+  const limite = minutosDoSlot(prox) - ANTECEDENCIA_MIN;
+  const faltam = limite - minutosAgora();
+  txt.innerHTML = 'Próxima retirada: <strong>' + esc(prox.label) + ' das ' + prox.hora + '</strong> — pedidos até ' + horaDe(limite) + '.';
+  min.hidden = false;
+  min.textContent = faltam >= 60 ? horaDe(faltam) : faltam + ' min';
 }
 
 /* --- perfil --- */
@@ -1298,14 +1325,28 @@ function tagPagamento(p) {
 }
 
 function renderCheckout() {
-  $('#optHorario').classList.toggle('is-on', estado.retirada === 'horario');
+  /* horários que já fecharam (passaram ou faltam menos de 15 min) ficam bloqueados */
+  const abertos = slotsAbertos();
+  if (abertos.length && !abertos.some(s => s.id === estado.slot)) estado.slot = abertos[0].id;
+  if (!abertos.length && estado.retirada === 'horario') estado.retirada = 'fila';
+
+  const optH = $('#optHorario');
+  optH.classList.toggle('is-on', estado.retirada === 'horario');
+  optH.classList.toggle('optcard--off', !abertos.length);
+  optH.querySelector('small').textContent = abertos.length
+    ? 'Fica pronto na hora que você marcar.'
+    : 'Os horários de hoje já fecharam.';
   $('#optFila').classList.toggle('is-on', estado.retirada === 'fila');
 
   $('#retiradaDetalhe').innerHTML = estado.retirada === 'horario'
-    ? `<div class="slots">${SLOTS.map(s => `
-        <button class="slot ${estado.slot === s.id ? 'is-on' : ''}" data-act="slot" data-val="${s.id}">
-          <strong>${s.hora}</strong><small>${esc(s.label)}</small>
-        </button>`).join('')}</div>`
+    ? `<div class="slots">${SLOTS.map(s => {
+        const aberto = slotAberto(s);
+        return `
+        <button class="slot ${aberto && estado.slot === s.id ? 'is-on' : ''}" data-act="slot" data-val="${s.id}" ${aberto ? '' : 'disabled'}>
+          <strong>${s.hora}</strong><small>${aberto ? esc(s.label) : 'encerrado'}</small>
+        </button>`;
+      }).join('')}</div>
+      <p class="pix__nota nota--esq" style="margin:6px 0 0">Cada horário aceita pedidos até ${ANTECEDENCIA_MIN} min antes.</p>`
     : `<div class="fila-box"><b>6</b><small>pedidos na frente do seu · previsão de <strong>12 a 15 min</strong> depois de confirmar.</small></div>`;
 
   const bf = $('#blocoFilho');
@@ -1400,6 +1441,11 @@ async function confirmarPedido(senhaOk) {
   if (ehResponsavel() && !estado.filho.trim()) {
     aviso('Diga o nome do aluno que vai retirar');
     const el = $('#inFilho'); if (el) el.focus();
+    return;
+  }
+  if (estado.retirada === 'horario' && !slotAberto(slotAtual())) {
+    aviso('O horário das ' + slotAtual().hora + ' já fechou. Escolha outro ou entre na fila.');
+    renderCheckout();
     return;
   }
   const forma = PAGAMENTOS.find(p => p.id === estado.pagamento);
@@ -2166,8 +2212,14 @@ document.addEventListener('click', (ev) => {
     case 'cancelar-remover':   fecharAlerta(); break;
     case 'confirmar-remover':  removerConfirmado(); break;
 
-    case 'retirada':   estado.retirada = val; renderCheckout(); break;
-    case 'slot':       estado.slot = val; renderCheckout(); break;
+    case 'retirada':
+      if (val === 'horario' && !slotsAbertos().length) { aviso('Os horários de hoje já fecharam · entre na fila'); return; }
+      estado.retirada = val; renderCheckout(); break;
+    case 'slot': {
+      const s = SLOTS.find(x => x.id === val);
+      if (!s || !slotAberto(s)) { aviso('Esse horário já fechou'); renderCheckout(); return; }
+      estado.slot = val; renderCheckout(); break;
+    }
     case 'pagamento': {
       const p = PAGAMENTOS.find(x => x.id === val);
       if (p && p.off) { aviso('Cartão pelo app ainda não está disponível · use Pagar na retirada'); return; }
