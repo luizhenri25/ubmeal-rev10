@@ -1830,7 +1830,10 @@ function renderModal() {
         </div>
       </div>
 
-      <div class="campo"><span>nome</span><div class="campo__ro">${esc(nomeExibido())}</div></div>
+      <div class="campo">
+        <span>nome (aparece nos próximos pedidos)</span>
+        <input class="input" id="inNomeConta" maxlength="60" autocomplete="name" value="${esc(estado.nome)}" />
+      </div>
       <div class="campo"><span>e-mail da conta Google</span><div class="campo__ro">${esc(emailExibido())}</div></div>
       <div class="campo"><span>tipo de usuário</span><div class="campo__ro">${esc(nomeTipo())}</div></div>
       <div class="campo">
@@ -1838,7 +1841,7 @@ function renderModal() {
         <input class="input" id="inTelefone" inputmode="tel" maxlength="16" placeholder="(24) 90000-0000" value="${esc(estado.telefone)}" />
       </div>
       <p class="pix__nota nota--esq">O e-mail vem da sua conta do Google. O telefone só é usado se acontecer algum problema com o seu pedido.</p>
-      <button class="btn btn--primary btn--block mt-md" data-act="salvar-telefone">Salvar telefone</button>`;
+      <button class="btn btn--primary btn--block mt-md" data-act="salvar-dados">Salvar dados</button>`;
     pintarAvatar($('#fotoAtual'));
     return;
   }
@@ -2269,11 +2272,15 @@ document.addEventListener('click', (ev) => {
       break;
     }
 
-    case 'salvar-telefone':
+    case 'salvar-dados': {
+      const nome = ($('#inNomeConta').value || '').trim().replace(/\s+/g, ' ');
+      if (!nome) { aviso('Digite o seu nome'); $('#inNomeConta').focus(); return; }
+      estado.nome = nome.slice(0, 60);
       estado.telefone = ($('#inTelefone').value || '').trim();
       salvar(); renderConta(); fecharModal();
-      aviso(estado.telefone ? 'Telefone salvo' : 'Telefone removido');
+      aviso('Dados salvos');
       break;
+    }
 
     case 'conta-tipo': abrirModal('tipo'); break;
 
