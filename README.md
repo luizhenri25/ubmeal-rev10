@@ -192,11 +192,11 @@ ubmeal-rev10/
 
 | Integrante | Papel no projeto | GitHub |
 |---|---|---|
-| Gabriel Vicente | Documentação | [@usuario] |
-| João Gabriel Gama | Firebase e regras de segurança | [@usuario] |
+| Gabriel Vicente | Documentação | [@gabrielvicente57](https://github.com/gabrielvicente57) |
+| João Gabriel Gama | Firebase e regras de segurança | [@JoaoGama-prog](https://github.com/JoaoGama-prog) |
 | Luiz Henrique Marques | Front-end | [@luizhenri25](https://github.com/luizhenri25) |
 | Noan Escobar | Front-end e testes | [@NoanRodrigues](https://github.com/NoanRodrigues) |
-| Thiago Araújo | Firebase, regras de segurança e testes | [@usuario] |
+| Thiago Araújo | Firebase, regras de segurança e testes | [@engthiagoc](https://github.com/engthiagoc) |
 
 Todos os integrantes participaram do contato com a cantina parceira, apresentando a ideia ao dono da Universidade do Lanche.
 
